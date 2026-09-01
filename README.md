@@ -9,11 +9,7 @@
 [![Bun](https://img.shields.io/badge/Bun-1.3+-fbf0df?style=flat-square&logo=bun&logoColor=000)](https://bun.sh/)
 [![Effect](https://img.shields.io/badge/Effect-v4_RC-8a2be2?style=flat-square)](https://effect.website/)
 
-## Give Pi a workflow, not another tool call
-
-`pi-callscript` turns a pile of reads, searches, commands, and edits into one compact execution flow. Pi can gather context in parallel, chain dependent work, pause to think, track slow jobs, and roll changes back from a snapshot—without filling the terminal with tool chatter.
-
-The result is fewer model round trips, faster agent sessions, and a clean vertical trace that always shows what is ready, running, done, or failed.
+`pi-callscript` is a one-tool code mode for Pi that composes reads, searches, commands, and edits into structured execution flows. It supports parallel and dependent calls, reasoning checkpoints, background work, reversible edits, and a compact live trace—reducing round trips without hiding execution state.
 
 ## Install
 
