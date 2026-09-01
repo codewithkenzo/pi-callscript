@@ -6,7 +6,7 @@
 
 [![Pi package](https://img.shields.io/badge/Pi-package-6f5cff?style=flat-square)](https://pi.dev/packages/pi-callscript)
 [![npm](https://img.shields.io/npm/v/pi-callscript?style=flat-square)](https://www.npmjs.com/package/pi-callscript)
-[![Bun](https://img.shields.io/badge/Bun-1.3+-fbf0df?style=flat-square&logo=bun&logoColor=000)](https://bun.sh/)
+[![Bun](https://img.shields.io/badge/Bun-1.4-fbf0df?style=flat-square&logo=bun&logoColor=000)](https://bun.com/)
 [![Effect](https://img.shields.io/badge/Effect-v4_RC-8a2be2?style=flat-square)](https://effect.website/)
 
 `pi-callscript` is a one-tool code mode for Pi that composes reads, searches, commands, and edits into structured execution flows. It supports parallel and dependent calls, reasoning checkpoints, background work, reversible edits, and a compact live trace—reducing round trips without hiding execution state.
@@ -69,7 +69,7 @@ Under the hood, [CallScript](https://callscript.dev/) validates the workflow as 
 
 ## Optional agent skill
 
-Install the included skill when you want Pi to use CallScript's parallel, phased, background, and reversible patterns more deliberately:
+Install the included skill when you want Pi to combine larger tool waves deliberately: carry results between dependent calls, pause only for real model judgment, continue from session bindings, bound fan-out, keep background work observable, and roll risky changes back.
 
 With npm:
 
@@ -116,4 +116,4 @@ bun run check
 bun run smoke
 ```
 
-`nix develop` opens the included Linux/macOS development shell. CI verifies Windows, macOS, and Linux with Node.js 22.19.
+`nix develop` opens the included Linux/macOS development shell. The project pins Bun 1.4.0; CI verifies Windows, macOS, and Linux with Node.js 22.19.

@@ -1,22 +1,42 @@
 ---
 name: pi-callscript
-description: Use Pi CallScript to compose fast, bounded coding-tool workflows with parallel evidence gathering, dependent edits, conditionals, explicit reasoning checkpoints, background jobs, HTTP requests, and reversible file changes. Use when a Pi task would otherwise need several tool round trips or benefits from a visible execution plan.
-compatibility: Requires the pi-callscript Pi extension and its callscript tool.
+description: Use Pi CallScript to compose multiple coding-tool actions into deliberate workflows with parallel evidence gathering, dependent chains, deterministic guards, full model reasoning checkpoints, resumable background jobs, bounded fan-out, compact outputs, and reversible edits. Use when a task would otherwise spend several model round trips moving intermediate tool results around, or when one visible plan can do the mechanical work while preserving judgment at explicit boundaries.
 ---
 
 # Pi CallScript
 
-Use `callscript` to turn a small JavaScript-shaped workflow into one validated, inert plan. The source is parsed, not evaluated; only the mounted operations can cause effects.
+Requires the `pi-callscript` Pi extension and its `callscript` tool.
 
-## Shape the work
+## What it solves
 
-1. Give each script one evidence or change outcome.
-2. Run independent calls together with `Promise.all`.
-3. `await` dependent calls in order.
-4. Put `think` between waves when later work depends on judgment. A paused result returns control for a full model reasoning turn; invoke `callscript` again with the unchanged script to resume from saved results.
-5. Return only the values or short summary needed for the next reasoning pass.
+Ordinary tool use alternates between the model and one tool result at a time. That is useful when every next action is uncertain, but slow and context-heavy when several calls are already predictable.
 
-Prefer two clear phases over one giant script. Keep file reads narrow with `offset` and `limit`, cap searches, and give potentially slow commands a timeout.
+Use `callscript` to keep mechanical work inside one dataflow: gather independent evidence together, pass results into dependent calls, branch on deterministic conditions, and return only the useful projection. Yield to the model only where interpretation or a new decision is genuinely required.
+
+Do not maximize the number of calls in one script. Maximize useful work per reasoning turn.
+
+## Choose the right shape
+
+| Situation                                              | Shape                                        |
+| ------------------------------------------------------ | -------------------------------------------- |
+| One small known action                                 | One short awaited call                       |
+| Several independent actions                            | `Promise.all`                                |
+| A later call mechanically depends on an earlier result | Sequential `await`                           |
+| Evidence must be interpreted before acting             | `think` between two waves                    |
+| A finite list needs the same operation                 | Bounded `slice(0, N).map(...)` fan-out       |
+| Slow work is independent of the current turn           | Start un-awaited, join by binding later      |
+| A file change may need reversal                        | `snapshot` before mutation; `undo` if needed |
+
+## Build deliberate workflows
+
+1. State one concrete outcome for the script.
+2. Gather the widest independent evidence wave first.
+3. Use pure expressions and guard returns for mechanical decisions.
+4. Insert `think` immediately before the first step that needs model judgment.
+5. Continue with dependent changes and validation.
+6. Return counts, decisions, paths, or short results—not every raw intermediate value.
+
+Prefer two clear phases over one giant script. Use stable, descriptive binding names because retained bindings remain available to later scripts in the same Pi session.
 
 ## Operations
 
@@ -34,56 +54,122 @@ CallScript additions:
 
 - `http({ url, method?, headers?, body?, timeoutMs? })` fetches bounded response text.
 - `wait({ milliseconds })` delays asynchronously.
-- `think({ note? })` ends the current tool call for a model reasoning turn; its note labels the focus, and the unchanged script resumes the plan.
-- `snapshot({ paths })` captures exact files before a risky change.
-- `undo({ snapshot })` restores everything captured by that snapshot.
+- `think({ note? })` returns control for a full model reasoning turn.
+- `snapshot({ paths })` captures exact file contents and remembers missing files.
+- `undo({ snapshot })` restores a session-local snapshot.
 
-## High-leverage patterns
+Keep reads narrow with `offset` and `limit`, cap searches, and give commands a realistic timeout in seconds.
 
-Gather independent evidence in one wave:
+## Compose calls, do not serialize them by habit
 
-```js
-const [manifest, matches, files] = await Promise.all([
-  read({ path: "package.json" }),
-  search({ pattern: "TODO", path: "src", limit: 30 }),
-  find({ pattern: "*.test.ts", path: "tests", limit: 50 }),
-]);
-return { manifest, matches, files };
-```
-
-Pause before an evidence-dependent change:
+Run three independent reads together, reason once, then continue into dependent work:
 
 ```js
-const [source, tests] = await Promise.all([
+const [source, tests, manifest] = await Promise.all([
   read({ path: "src/index.ts" }),
   read({ path: "tests/index.test.ts" }),
+  read({ path: "package.json" }),
 ]);
-await think({ note: "choose the smallest edit supported by source and tests" });
+await think({ note: "choose the smallest change supported by the source, tests, and manifest" });
+const point = await snapshot({ paths: ["src/index.ts"] });
 const changed = await edit({
   path: "src/index.ts",
   edits: [{ oldText: "old exact text", newText: "new exact text" }],
 });
-return { changed };
+const checks = await run({ command: "bun test", timeout: 120 });
+return { snapshot: point.id, changed, checks };
 ```
 
-Make a reversible edit:
+At the checkpoint, downstream calls remain queued. Reason from the completed wave, then invoke `callscript` again with the exact unchanged script. Settled calls are reused and execution resumes after `think`.
+
+The `note` is only the checkpoint label. The `think` call itself creates the reasoning turn. Use it sparingly: deterministic dataflow does not need a model pause.
+
+## Carry results through deterministic chains
+
+Use a guard when the next action follows directly from the result:
 
 ```js
-const point = await snapshot({ paths: ["src/index.ts", "package.json"] });
+const source = await read({ path: "src/config.ts" });
+if (!source.includes("legacyMode")) return { changed: false, reason: "already clean" };
 const changed = await edit({
-  path: "src/index.ts",
-  edits: [{ oldText: "old exact text", newText: "new exact text" }],
+  path: "src/config.ts",
+  edits: [{ oldText: "legacyMode", newText: "mode" }],
 });
-return { snapshot: point.id, changed };
+return { changed: true, result: changed };
 ```
 
-If validation fails, correct the exact reported construct and retry. CallScript bindings are single-assignment, fan-out must be visibly bounded, and arbitrary imports, globals, loops, or evaluation are not supported.
+This is cheaper and clearer than pausing for the model to rediscover an obvious branch.
 
-Use an un-awaited call only for genuinely independent background work:
+## Bound repeated work visibly
+
+Fan out only over a finite visible bound:
 
 ```js
-const checks = run({ command: "bun test", timeout: 120 });
+const paths = ["src/a.ts", "src/b.ts", "src/c.ts"];
+const sources = await Promise.all(paths.slice(0, 3).map((path) => read({ path })));
+return { files: paths, count: sources.length };
+```
+
+Use `const` bindings only. Do not use imports, globals, reassignment, unbounded loops, or arbitrary evaluation. When validation rejects a construct, replace only that construct with the suggested CallScript form.
+
+## Publish once, continue later
+
+Bindings retained by a run's returned projection survive in the current CallScript session. Use this to split a large job at a natural reasoning boundary without repeating the first phase.
+
+First script:
+
+```js
+const evidence = await search({ pattern: "legacyMode", path: "src", limit: 40 });
+return { gathered: true, evidence };
+```
+
+Later script:
+
+```js
+if (!evidence.includes("legacyMode")) return { changed: false };
+const source = await read({ path: "src/config.ts" });
+return { evidence, source };
+```
+
+Use `/callscript reset` when those published bindings should no longer influence later work.
+
+## Start and join background work
+
+Detach only work that is independent of the current reasoning turn:
+
+```js
+const checks = run({ command: "bun test", timeout: 180 });
 return { started: "checks" };
 ```
 
-Join it in a later script with `const result = await checks;`. Do not leave background work unobserved.
+Join it from a later script:
+
+```js
+const result = await checks;
+return { checks: result };
+```
+
+Never leave a background binding unobserved. Join it, inspect its final state, or reset the session.
+
+## Make risky work recoverable
+
+Snapshot the exact mutation set before editing. If a later validation step fails, use the published snapshot id in a follow-up script:
+
+```js
+const restored = await undo({ snapshot: point.id });
+return { restored };
+```
+
+Snapshots are session-local. Capture every file the workflow may change, including files that do not exist yet.
+
+## Protect context and prompt-cache efficiency
+
+- Keep the tool surface stable; use `callscript` instead of alternating between many tool schemas.
+- Put independent calls in one wave so their results enter one reasoning turn.
+- Reuse named session bindings rather than re-reading unchanged evidence.
+- Resume a `think` checkpoint with the exact script so settled work is reused.
+- Narrow file reads and searches before they produce large results.
+- Return compact projections. Do not echo large source files or command logs once downstream steps have consumed them.
+- Split at genuine decision boundaries. Long scripts with many speculative branches are harder to reuse than two focused phases.
+
+The goal is not fewer visible operations. It is fewer model round trips, less repeated context, and a clearer boundary between mechanical execution and model judgment.
