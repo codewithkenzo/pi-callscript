@@ -75,19 +75,6 @@ export interface PersistedMode {
   mode: Mode;
 }
 
-export interface ToolSummary {
-  name: string;
-  description?: string;
-}
-
-export interface ToolLookupDetails {
-  kind: "search" | "describe";
-  query?: string;
-  tools: ToolSummary[];
-}
-
 export const MAIN_TOOL = "callscript";
-export const SEARCH_TOOL = "callscript_search";
-export const DESCRIBE_TOOL = "callscript_describe";
-export const EXTENSION_TOOLS = [MAIN_TOOL, SEARCH_TOOL, DESCRIBE_TOOL] as const;
+export const EXTENSION_TOOLS = [MAIN_TOOL] as const;
 export const STATE_ENTRY = "pi-callscript";

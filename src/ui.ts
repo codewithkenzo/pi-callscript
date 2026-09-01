@@ -1,6 +1,6 @@
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 
-import type { Activity, RunDetails, ToolLookupDetails } from "./types.js";
+import type { Activity, RunDetails } from "./types.js";
 
 interface Palette {
   fg(color: string, text: string): string;
@@ -401,43 +401,5 @@ export const renderScriptResult = (
       lines.push(...output.map((line) => `${theme.fg("dim", "└─")} ${line}`));
     }
   }
-  return new Text(lines.join("\n"), 0, 0);
-};
-
-type LookupKind = ToolLookupDetails["kind"];
-
-export const renderLookupCall = (
-  kind: LookupKind,
-  subject: string,
-  phase: CallPhase,
-  theme: Palette,
-) => {
-  const label = kind === "search" ? "Find tools" : "Tool details";
-  const state = phase === "ready" ? " · starting" : "";
-  const target = subject.length > 0 ? `  ${theme.fg("accent", shortText(subject, 64))}` : "";
-  return new Text(
-    `${theme.fg("toolTitle", theme.bold(label))}${target}${theme.fg("dim", state)}`,
-    0,
-    0,
-  );
-};
-
-export const renderLookupResult = (
-  details: ToolLookupDetails | undefined,
-  expanded: boolean,
-  partial: boolean,
-  theme: Palette,
-) => {
-  if (partial) return new Container();
-  const tools = details?.tools ?? [];
-  if (tools.length === 0) return new Text(theme.fg("warning", "No matching tools"), 0, 0);
-  const lines = tools.map((tool, index) => {
-    const last = index === tools.length - 1;
-    const branch = theme.fg("dim", last ? "└─" : "├─");
-    const name = theme.bold(humanKey(tool.name));
-    if (!expanded || tool.description === undefined) return `${branch} ${name}`;
-    const child = theme.fg("dim", last ? "   └─" : "│  └─");
-    return `${branch} ${name}\n${child} ${theme.fg("muted", tool.description)}`;
-  });
   return new Text(lines.join("\n"), 0, 0);
 };

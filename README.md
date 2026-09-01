@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/pi-callscript.png" alt="pi-callscript" width="200" />
+  <img src="./assets/pi-callscript.webp" alt="pi-callscript" width="200" />
 </p>
 
 # pi-callscript
@@ -9,43 +9,27 @@
 [![Bun](https://img.shields.io/badge/Bun-1.3+-fbf0df?style=flat-square&logo=bun&logoColor=000)](https://bun.sh/)
 [![Effect](https://img.shields.io/badge/Effect-v4_RC-8a2be2?style=flat-square)](https://effect.website/)
 
-CallScript code mode for [Pi](https://pi.dev/), powered by Effect and built for fast agentic work.
+## Give Pi a workflow, not another tool call
 
-`pi-callscript` lets an agent compose sequential, parallel, conditional, and background tool calls in one compact script. Pi keeps control of the actual file and shell tools, while [CallScript](https://callscript.dev/) compiles the script into a bounded inert plan—it is never evaluated as JavaScript.
+`pi-callscript` turns a pile of reads, searches, commands, and edits into one compact execution flow. Pi can gather context in parallel, chain dependent work, pause to think, track slow jobs, and roll changes back from a snapshot—without filling the terminal with tool chatter.
+
+The result is fewer model round trips, faster agent sessions, and a clean vertical trace that always shows what is ready, running, done, or failed.
 
 ## Install
 
-Install from npm:
-
 ```sh
+# npm
 pi install npm:pi-callscript
-```
 
-As a regular project dependency:
-
-```sh
-npm install pi-callscript
-```
-
-Use `pi install` when you want Pi to register and manage the extension automatically.
-
-Try it for one session without installing:
-
-```sh
-pi -e npm:pi-callscript
-```
-
-Install directly from GitHub:
-
-```sh
+# or GitHub
 pi install git:github.com/codewithkenzo/pi-callscript
 ```
 
-Pi and Node.js 22.19 or newer are required. Bun is only needed to develop the package.
+Pi and Node.js 22.19 or newer are required.
 
 ## Use
 
-CallScript mode is enabled after installation. Ask Pi to use CallScript, or manage it directly:
+CallScript mode starts enabled. Ask Pi to use it, or manage it directly:
 
 ```text
 /callscript status
@@ -55,27 +39,45 @@ CallScript mode is enabled after installation. Ask Pi to use CallScript, or mana
 /callscript reset
 ```
 
-The agent receives three tools:
+The extension exposes one tool: `callscript`. It composes these Pi operations:
 
-- `callscript` executes a plan.
-- `callscript_search` finds an inner tool without loading every signature.
-- `callscript_describe` returns exact signatures when needed.
+`read` · `write` · `edit` · `search` · `find` · `list` · `run`
 
-Available operations are `read`, `write`, `edit`, `search`, `find`, `list`, `run`, `http`, `wait`, `think`, `snapshot`, and `undo`.
+It also adds:
 
-A plan can mix parallel work with an explicit reasoning checkpoint:
+- `http` — fetch bounded response text.
+- `wait` — delay asynchronously without blocking Pi.
+- `think` — return control to the model for a full reasoning turn, then resume the same plan.
+- `snapshot` — capture exact files before a change.
+- `undo` — restore a captured snapshot.
 
 ```js
 const point = await snapshot({ paths: ["src/index.ts"] });
 const [manifest, matches] = await Promise.all([
   read({ path: "package.json" }),
-  search({ pattern: "TODO", path: "src" }),
+  search({ pattern: "TODO", path: "src", limit: 30 }),
 ]);
 await think({ note: "choose the smallest useful edit" });
 return { point, manifest, matches };
 ```
 
-The native Pi tool view shows a compact vertical trace. Each operation stays visible with a ready, running, done, failed, or skipped state, plus its file, command, URL, timeout, and short result. Use Pi's normal `Ctrl+O` toggle for expanded details.
+At `think`, downstream operations stay queued while the tool call returns to the model. The model gets a normal reasoning turn with the first wave's results, then reissues the unchanged script to resume from the saved checkpoint—completed calls are not repeated.
+
+Each operation stays visible in Pi's native tool view with its target, short result, elapsed time, timeout, and live state. Use Pi's normal `Ctrl+O` toggle for expanded details.
+
+Under the hood, [CallScript](https://callscript.dev/) validates the workflow as a bounded inert plan instead of evaluating model-authored JavaScript. That is what makes aggressive composition predictable without adding another code sandbox.
+
+## Optional agent skill
+
+Install the included skill when you want Pi to use CallScript's parallel, phased, background, and reversible patterns more deliberately:
+
+```sh
+npx pi-callscript
+# or
+bunx pi-callscript
+```
+
+This copies `SKILL.md` to `~/.agents/skills/pi-callscript/`. It is separate from the extension and is not installed by `pi install`.
 
 ## Configuration
 
@@ -96,7 +98,7 @@ Global settings live at `~/.pi/agent/callscript.json`. Project settings in `.pi/
 }
 ```
 
-These are execution limits, not a separate permission layer. File and shell behavior remains Pi-native. `run` uses PowerShell on Windows and Bash on Linux and macOS.
+These are execution limits, not a separate permission layer. File and shell behavior stays Pi-native. `run` uses PowerShell on Windows and Bash on Linux and macOS.
 
 ## Development
 
@@ -108,13 +110,4 @@ bun run check
 bun run smoke
 ```
 
-Use `nix develop` for the included Linux/macOS development shell. CI verifies the package on Windows, macOS, and Linux with Node.js 22.19.
-
-Before publishing:
-
-```sh
-bun run pack:check
-npm publish
-```
-
-Publishing to npm with the `pi-package` keyword makes the extension discoverable in Pi's package catalog.
+`nix develop` opens the included Linux/macOS development shell. CI verifies Windows, macOS, and Linux with Node.js 22.19.

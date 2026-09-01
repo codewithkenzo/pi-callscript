@@ -10,7 +10,12 @@ import { Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { CallScriptRuntime } from "../src/runtime.js";
-import type { ExtensionConfig, InvocationInput, RunDetails } from "../src/types.js";
+import {
+  EXTENSION_TOOLS,
+  type ExtensionConfig,
+  type InvocationInput,
+  type RunDetails,
+} from "../src/types.js";
 
 const directories: string[] = [];
 
@@ -77,6 +82,10 @@ afterEach(async () => {
 });
 
 describe("CallScriptRuntime", () => {
+  test("keeps the extension surface to one tool", () => {
+    expect(EXTENSION_TOOLS).toEqual(["callscript"]);
+  });
+
   test("composes Pi write, read, and list tools", async () => {
     const cwd = await workspace();
     const runtime = new CallScriptRuntime(cwd, config);

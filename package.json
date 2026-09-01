@@ -1,7 +1,7 @@
 {
   "name": "pi-callscript",
-  "version": "0.1.0",
-  "description": "CallScript code mode for Pi, powered by Effect and built for fast agentic work",
+  "version": "0.1.1",
+  "description": "One-tool code mode for Pi with parallel context, reasoning checkpoints, and reversible edits",
   "keywords": [
     "agentic-coding",
     "ai-agents",
@@ -24,9 +24,14 @@
     "type": "git",
     "url": "git+https://github.com/codewithkenzo/pi-callscript.git"
   },
+  "bin": {
+    "pi-callscript": "./bin/pi-callscript.mjs"
+  },
   "files": [
     "assets/",
+    "bin/",
     "dist/",
+    "skill/",
     "src/",
     "README.md"
   ],
@@ -50,9 +55,7 @@
     "format:check": "oxfmt . --check",
     "lint": "oxlint --deny-warnings .",
     "test": "vitest run",
-    "benchmark": "bun run bench/performance.ts",
-    "benchmark:memory": "bun run build && bun run bench/memory.ts",
-    "smoke": "bun run build && bun run bench/pi-smoke.ts",
+    "smoke": "bun run build && bun run tests/pi-smoke.ts",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run build",
     "pack:check": "bun run check && npm pack --dry-run",
     "prepack": "bun run build"
@@ -64,7 +67,6 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.84.4",
     "@earendil-works/pi-tui": "0.84.4",
-    "@oxlint/plugins": "1.80.0",
     "@types/node": "26.4.0",
     "lefthook": "2.1.12",
     "oxfmt": "0.65.0",
@@ -87,6 +89,6 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/codewithkenzo/pi-callscript/main/assets/pi-callscript.png"
+    "image": "https://raw.githubusercontent.com/codewithkenzo/pi-callscript/main/assets/pi-callscript.webp"
   }
 }

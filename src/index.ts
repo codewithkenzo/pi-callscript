@@ -10,23 +10,15 @@ import { Value } from "typebox/value";
 import { isMode, loadConfig } from "./config.js";
 import { CallScriptRuntime } from "./runtime.js";
 import {
-  DESCRIBE_TOOL,
   EXTENSION_TOOLS,
   MAIN_TOOL,
-  SEARCH_TOOL,
   STATE_ENTRY,
   type Activity,
   type Mode,
   type PersistedMode,
   type RunDetails,
-  type ToolLookupDetails,
 } from "./types.js";
-import {
-  renderLookupCall,
-  renderLookupResult,
-  renderScriptCall,
-  renderScriptResult,
-} from "./ui.js";
+import { renderScriptCall, renderScriptResult } from "./ui.js";
 
 const ExecuteSchema = Type.Object(
   {
@@ -36,19 +28,6 @@ const ExecuteSchema = Type.Object(
         "CallScript JavaScript source. It is parsed into an inert plan and never evaluated as JavaScript.",
     }),
   },
-  { additionalProperties: false },
-);
-
-const SearchSchema = Type.Object(
-  {
-    query: Type.String({ maxLength: 200 }),
-    limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })),
-  },
-  { additionalProperties: false },
-);
-
-const DescribeSchema = Type.Object(
-  { names: Type.Array(Type.String({ maxLength: 100 }), { maxItems: 50 }) },
   { additionalProperties: false },
 );
 
@@ -91,23 +70,6 @@ const PersistedModeSchema = Type.Object(
   {
     version: Type.Literal(1),
     mode: Type.Union([Type.Literal("off"), Type.Literal("on")]),
-  },
-  { additionalProperties: false },
-);
-
-const ToolSummarySchema = Type.Object(
-  {
-    name: Type.String(),
-    description: Type.Optional(Type.String()),
-  },
-  { additionalProperties: false },
-);
-
-const ToolLookupDetailsSchema = Type.Object(
-  {
-    kind: Type.Union([Type.Literal("search"), Type.Literal("describe")]),
-    query: Type.Optional(Type.String()),
-    tools: Type.Array(ToolSummarySchema),
   },
   { additionalProperties: false },
 );
@@ -204,9 +166,6 @@ export const isRunDetails = (value: unknown): value is RunDetails => {
 const isPersistedMode = (value: unknown): value is PersistedMode =>
   Value.Check(PersistedModeSchema, value);
 
-const isToolLookupDetails = (value: unknown): value is ToolLookupDetails =>
-  Value.Check(ToolLookupDetailsSchema, value);
-
 const restoredState = (ctx: ExtensionContext) => {
   const entries = ctx.sessionManager.getBranch();
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -246,10 +205,10 @@ const resultText = (result: { content: Array<{ type: string; text?: string }> })
 };
 
 export const CALLSCRIPT_TOOL_DESCRIPTION =
-  "Execute one bounded, inert JavaScript-shaped tool plan. Mounted calls: read, write, edit, search, find, list, run, http, wait, think, snapshot, and undo. Bind results with const, await dependencies, use Promise.all for independent calls, and return only what the next reasoning pass needs. Un-awaited calls become session jobs and can be joined by name later. Use callscript_search or callscript_describe when a signature is unclear.";
+  "Execute one bounded, inert JavaScript-shaped plan. Pi calls: read({path,offset?,limit?}) reads text or images; write({path,content}) writes one file; edit({path,edits}) replaces exact text; search({pattern,path?,glob?,ignoreCase?,literal?,context?,limit?}) searches file contents; find({pattern,path?,limit?}) finds paths; list({path?}) lists a directory; run({command,timeout?}) runs a shell command. Extra calls: http({url,method?,headers?,body?,timeoutMs?}) fetches bounded text; wait({milliseconds}) delays without blocking; think({note?}) yields control for a full reasoning turn—rerun the unchanged script to resume; snapshot({paths}) captures files; undo({snapshot}) restores them. Await dependencies, use Promise.all for independent calls, and return only useful results. Un-awaited calls become session jobs that can be joined later.";
 
 export const CALLSCRIPT_MODE_PROMPT =
-  "CallScript mode replaces the normal tools. Work in short evidence-driven phases: parallelize independent calls, await dependencies, then stop and reason before evidence-dependent work. Use think for an explicit checkpoint and snapshot before changes that may need undo.";
+  "CallScript mode replaces the normal tools. Work in short evidence-driven phases: parallelize independent calls and await dependencies. Use think when later calls require judgment: a paused result returns control to you for reasoning; invoke callscript again with the unchanged script to resume from saved results. Use snapshot before changes that may need undo.";
 
 export default async function callscriptExtension(pi: ExtensionAPI) {
   let config = await Effect.runPromise(loadConfig(process.cwd()));
@@ -310,57 +269,6 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
         options.expanded,
         options.isPartial,
         context.isError,
-        theme,
-      );
-    },
-  });
-
-  pi.registerTool({
-    name: SEARCH_TOOL,
-    label: "Find tools",
-    description: "Find CallScript tools by name, purpose, or argument field.",
-    parameters: SearchSchema,
-    async execute(_toolCallId, { query, limit }) {
-      const result = runtime.search(query, limit);
-      return {
-        content: [{ type: "text", text: result.text }],
-        details: result.details,
-      };
-    },
-    renderCall({ query }, theme, context) {
-      const phase = !context.isPartial ? "settled" : context.executionStarted ? "running" : "ready";
-      return renderLookupCall("search", query, phase, theme);
-    },
-    renderResult(result, options, theme) {
-      const candidate: unknown = result.details;
-      return renderLookupResult(
-        isToolLookupDetails(candidate) ? candidate : undefined,
-        options.expanded,
-        options.isPartial,
-        theme,
-      );
-    },
-  });
-
-  pi.registerTool({
-    name: DESCRIBE_TOOL,
-    label: "Tool details",
-    description: "Show full signatures for named CallScript tools before writing a script.",
-    parameters: DescribeSchema,
-    async execute(_toolCallId, { names }) {
-      const result = runtime.describe(names);
-      return { content: [{ type: "text", text: result.text }], details: result.details };
-    },
-    renderCall({ names }, theme, context) {
-      const phase = !context.isPartial ? "settled" : context.executionStarted ? "running" : "ready";
-      return renderLookupCall("describe", names.join(" · "), phase, theme);
-    },
-    renderResult(result, options, theme) {
-      const candidate: unknown = result.details;
-      return renderLookupResult(
-        isToolLookupDetails(candidate) ? candidate : undefined,
-        options.expanded,
-        options.isPartial,
         theme,
       );
     },

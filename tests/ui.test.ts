@@ -1,13 +1,8 @@
 import { describe, expect, test } from "vitest";
 
-import {
-  renderLookupCall,
-  renderLookupResult,
-  renderScriptCall,
-  renderScriptResult,
-} from "../src/ui.js";
+import { renderScriptCall, renderScriptResult } from "../src/ui.js";
 import { isRunDetails } from "../src/index.js";
-import type { Activity, RunDetails, ToolLookupDetails } from "../src/types.js";
+import type { Activity, RunDetails } from "../src/types.js";
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -336,28 +331,5 @@ describe("CallScript UI", () => {
     expect(compact.length).toBeLessThan(260);
     expect(compact).toContain("Structured result");
     expect(compact).not.toContain("{");
-  });
-
-  test("renders discovery as a clean vertical list", () => {
-    const search: ToolLookupDetails = {
-      kind: "search",
-      query: "file",
-      tools: [
-        { name: "read", description: "Read the contents of a file." },
-        { name: "write", description: "Write content to a file." },
-      ],
-    };
-    const compact = [
-      render(renderLookupCall("search", "file", "settled", theme)),
-      render(renderLookupResult(search, false, false, theme)),
-    ].join("\n");
-    const expanded = render(renderLookupResult(search, true, false, theme));
-
-    expect(compact).toContain("Find tools  file");
-    expect(compact).toContain("├─ read");
-    expect(compact).toContain("└─ write");
-    expect(compact).not.toContain("callscript_search");
-    expect(compact).not.toContain("{");
-    expect(expanded).toContain("Read the contents of a file.");
   });
 });

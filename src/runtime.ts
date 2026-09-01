@@ -7,11 +7,8 @@ import {
   previewValue,
   publishedVariables,
   scriptEngine,
-  searchTools,
-  toolCard,
   type AnyScriptTool,
   type ExecuteResult,
-  type IntrospectableTool,
   type RunState,
   type Script,
   type ScriptEngine,
@@ -29,8 +26,6 @@ import type {
   Invocation,
   InvocationInput,
   RunDetails,
-  ToolLookupDetails,
-  ToolSummary,
 } from "./types.js";
 
 export interface ExecutionResult {
@@ -66,19 +61,6 @@ const outputText = <T>(value: T) => {
     return String(value);
   }
 };
-
-const toolSummary = (entry: IntrospectableTool): ToolSummary => {
-  if (entry.description === undefined) return { name: entry.name };
-  return {
-    name: entry.name,
-    description: entry.description.trim().replace(/\s+/g, " "),
-  };
-};
-
-interface ToolLookupResult {
-  text: string;
-  details: ToolLookupDetails;
-}
 
 const finalDetails = (
   invocation: Invocation,
@@ -300,30 +282,6 @@ export class CallScriptRuntime {
       });
       yield* this.#snapshots.clear();
     });
-  }
-
-  search(query: string, limit = 10): ToolLookupResult {
-    const matched = searchTools(this.tools, query, limit);
-    return {
-      text: matched.map((entry) => toolCard(entry)).join("\n\n"),
-      details: {
-        kind: "search",
-        query,
-        tools: matched.map(toolSummary),
-      },
-    };
-  }
-
-  describe(names: readonly string[]): ToolLookupResult {
-    const wanted = new Set(names);
-    const matched = this.tools.filter((entry) => wanted.has(entry.name));
-    return {
-      text: matched.map((entry) => toolCard(entry)).join("\n\n"),
-      details: {
-        kind: "describe",
-        tools: matched.map(toolSummary),
-      },
-    };
   }
 
   execute(script: string, input: InvocationInput) {
