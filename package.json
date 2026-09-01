@@ -25,7 +25,7 @@
     "url": "git+https://github.com/codewithkenzo/pi-callscript.git"
   },
   "bin": {
-    "pi-callscript": "./bin/pi-callscript.mjs"
+    "pi-callscript": "bin/pi-callscript.mjs"
   },
   "files": [
     "assets/",
