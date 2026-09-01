@@ -13,11 +13,15 @@
 
 ## Install
 
-```sh
-# npm
-pi install npm:pi-callscript
+From npm:
 
-# or GitHub
+```sh
+pi install npm:pi-callscript
+```
+
+From GitHub:
+
+```sh
 pi install git:github.com/codewithkenzo/pi-callscript
 ```
 
@@ -67,9 +71,15 @@ Under the hood, [CallScript](https://callscript.dev/) validates the workflow as 
 
 Install the included skill when you want Pi to use CallScript's parallel, phased, background, and reversible patterns more deliberately:
 
+With npm:
+
 ```sh
 npx pi-callscript
-# or
+```
+
+With Bun:
+
+```sh
 bunx pi-callscript
 ```
 
