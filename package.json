@@ -1,6 +1,6 @@
 {
   "name": "pi-callscript",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "One-tool code mode for Pi with parallel context, reasoning checkpoints, and reversible edits",
   "keywords": [
     "agentic-coding",
