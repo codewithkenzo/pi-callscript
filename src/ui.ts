@@ -1,4 +1,6 @@
 import { Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 import type { Activity, RunDetails } from "./types.js";
 
@@ -109,11 +111,16 @@ export const renderScriptCall = (
   return new Text(`${title}\n${theme.fg("dim", body)}`, 0, 0);
 };
 
-const isString = <T>(value: T): value is T & string => typeof value === "string";
-const isNumber = <T>(value: T): value is T & number => typeof value === "number";
-const isBoolean = <T>(value: T): value is T & boolean => typeof value === "boolean";
+const StringValueSchema = Type.String();
+const NumberValueSchema = Type.Number();
+const BooleanValueSchema = Type.Boolean();
+const DisplayObjectSchema = Type.Object({}, { additionalProperties: true });
+
+const isString = <T>(value: T): value is T & string => Value.Check(StringValueSchema, value);
+const isNumber = <T>(value: T): value is T & number => Value.Check(NumberValueSchema, value);
+const isBoolean = <T>(value: T): value is T & boolean => Value.Check(BooleanValueSchema, value);
 const isDisplayObject = <T>(value: T): value is T & object =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+  Value.Check(DisplayObjectSchema, value);
 
 const parsedJson = (text: string): { parsed: true; value: unknown } | { parsed: false } => {
   if (text.length > MAX_JSON_PARSE_CHARS) return { parsed: false };

@@ -13,7 +13,6 @@ import {
   EXTENSION_TOOLS,
   MAIN_TOOL,
   STATE_ENTRY,
-  type Activity,
   type Mode,
   type PersistedMode,
   type RunDetails,
@@ -74,96 +73,57 @@ const PersistedModeSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const ActivitySchema = Type.Object(
+  {
+    sequence: Type.Number(),
+    atMs: Type.Number(),
+    step: Type.String(),
+    tool: Type.String(),
+    phase: Type.Union([
+      Type.Literal("queued"),
+      Type.Literal("start"),
+      Type.Literal("done"),
+      Type.Literal("error"),
+      Type.Literal("skipped"),
+    ]),
+    item: Type.Optional(Type.Number()),
+    elapsedMs: Type.Optional(Type.Number()),
+    target: Type.Optional(Type.String()),
+    detail: Type.Optional(Type.String()),
+    timeoutMs: Type.Optional(Type.Number()),
+    expectedMs: Type.Optional(Type.Number()),
+    result: Type.Optional(Type.String()),
+    error: Type.Optional(Type.String()),
+  },
+  { additionalProperties: true },
+);
+
+const RunDetailsSchema = Type.Object(
+  {
+    version: Type.Literal(1),
+    mode: Type.Union([Type.Literal("off"), Type.Literal("on")]),
+    status: Type.Union([
+      Type.Literal("running"),
+      Type.Literal("paused"),
+      Type.Literal("ok"),
+      Type.Literal("error"),
+      Type.Literal("invalid"),
+    ]),
+    elapsedMs: Type.Number(),
+    calls: Type.Number(),
+    completed: Type.Number(),
+    active: Type.Number(),
+    activity: Type.Array(ActivitySchema),
+  },
+  { additionalProperties: true },
+);
+
 const extensionToolSet: ReadonlySet<string> = new Set(EXTENSION_TOOLS);
-const activityPhases: ReadonlySet<string> = new Set([
-  "queued",
-  "start",
-  "done",
-  "error",
-  "skipped",
-]);
-const runStatuses: ReadonlySet<string> = new Set(["running", "paused", "ok", "error", "invalid"]);
 
-const isActivity = (value: unknown): value is Activity => {
-  if (value === null || typeof value !== "object") return false;
-  if (
-    !("sequence" in value) ||
-    typeof value.sequence !== "number" ||
-    !Number.isFinite(value.sequence) ||
-    !("atMs" in value) ||
-    typeof value.atMs !== "number" ||
-    !Number.isFinite(value.atMs) ||
-    !("step" in value) ||
-    typeof value.step !== "string" ||
-    !("tool" in value) ||
-    typeof value.tool !== "string" ||
-    !("phase" in value) ||
-    typeof value.phase !== "string" ||
-    !activityPhases.has(value.phase)
-  )
-    return false;
-  if (
-    "item" in value &&
-    value.item !== undefined &&
-    (typeof value.item !== "number" || !Number.isFinite(value.item))
-  )
-    return false;
-  if (
-    "elapsedMs" in value &&
-    value.elapsedMs !== undefined &&
-    (typeof value.elapsedMs !== "number" || !Number.isFinite(value.elapsedMs))
-  )
-    return false;
-  if (
-    "timeoutMs" in value &&
-    value.timeoutMs !== undefined &&
-    (typeof value.timeoutMs !== "number" || !Number.isFinite(value.timeoutMs))
-  )
-    return false;
-  if (
-    "expectedMs" in value &&
-    value.expectedMs !== undefined &&
-    (typeof value.expectedMs !== "number" || !Number.isFinite(value.expectedMs))
-  )
-    return false;
-  if ("target" in value && value.target !== undefined && typeof value.target !== "string")
-    return false;
-  if ("detail" in value && value.detail !== undefined && typeof value.detail !== "string")
-    return false;
-  if ("result" in value && value.result !== undefined && typeof value.result !== "string")
-    return false;
-  return !("error" in value && value.error !== undefined && typeof value.error !== "string");
-};
+export const isRunDetails = <T>(value: T): value is T & RunDetails =>
+  Value.Check(RunDetailsSchema, value);
 
-export const isRunDetails = (value: unknown): value is RunDetails => {
-  if (value === null || typeof value !== "object") return false;
-  return (
-    "version" in value &&
-    value.version === 1 &&
-    "mode" in value &&
-    (value.mode === "on" || value.mode === "off") &&
-    "status" in value &&
-    typeof value.status === "string" &&
-    runStatuses.has(value.status) &&
-    "elapsedMs" in value &&
-    typeof value.elapsedMs === "number" &&
-    Number.isFinite(value.elapsedMs) &&
-    "calls" in value &&
-    typeof value.calls === "number" &&
-    Number.isFinite(value.calls) &&
-    "completed" in value &&
-    typeof value.completed === "number" &&
-    Number.isFinite(value.completed) &&
-    "active" in value &&
-    typeof value.active === "number" &&
-    Number.isFinite(value.active) &&
-    "activity" in value &&
-    Array.isArray(value.activity) &&
-    value.activity.every(isActivity)
-  );
-};
-
-const isPersistedMode = (value: unknown): value is PersistedMode =>
+const isPersistedMode = <T>(value: T): value is T & PersistedMode =>
   Value.Check(PersistedModeSchema, value);
 
 const restoredState = (ctx: ExtensionContext) => {

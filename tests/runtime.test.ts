@@ -7,6 +7,8 @@ import { EventEmitter, once } from "node:events";
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { CallScriptRuntime } from "../src/runtime.js";
@@ -19,8 +21,14 @@ import {
 
 const directories: string[] = [];
 
-const isAddressInfo = (value: string | AddressInfo | null): value is AddressInfo =>
-  typeof value === "object" && value !== null;
+const AddressInfoSchema = Type.Object({
+  address: Type.String(),
+  family: Type.String(),
+  port: Type.Number(),
+});
+
+const isAddressInfo = <T>(value: T): value is T & AddressInfo =>
+  Value.Check(AddressInfoSchema, value);
 
 const config: ExtensionConfig = {
   mode: "on",
