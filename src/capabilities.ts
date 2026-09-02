@@ -25,6 +25,7 @@ import { Chunk, Effect, Ref } from "effect";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
+import { ToolInvocationFailure } from "./errors.js";
 import { SnapshotStore } from "./snapshots.js";
 import type { Activity, ActivityState, ExtensionConfig, Invocation, RunDetails } from "./types.js";
 
@@ -46,16 +47,6 @@ interface OperationResult<T> {
 
 const STREAM_INTERVAL_MS = 50;
 const elapsedSince = (startedAt: number) => Math.max(0, Math.round(performance.now() - startedAt));
-
-export class CapabilityError extends Error {
-  readonly tool: string;
-
-  constructor(tool: string, cause: unknown) {
-    super(`${tool}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
-    this.name = "CapabilityError";
-    this.tool = tool;
-  }
-}
 
 const jsonSchema = (schema: TSchema): JsonSchema => ({ ...schema });
 
@@ -384,7 +375,7 @@ const adapt = <P extends TSchema, D, S>(
           const prepared = definition.prepareArguments?.(raw) ?? raw;
           return Value.Parse(definition.parameters, prepared);
         },
-        catch: (cause) => new CapabilityError(name, cause),
+        catch: (cause) => ToolInvocationFailure.from(name, cause),
       }).pipe(
         Effect.flatMap((params) =>
           withActivity(source, call, describeInput(params), (active) =>
@@ -397,7 +388,7 @@ const adapt = <P extends TSchema, D, S>(
                   undefined,
                   active.ctx,
                 ),
-              catch: (cause) => new CapabilityError(name, cause),
+              catch: (cause) => ToolInvocationFailure.from(name, cause),
             }).pipe(
               Effect.map((result) => ({
                 value: nativeResult(result),
@@ -467,9 +458,9 @@ const requestSignal = (
 };
 
 const aborted = (signal: AbortSignal) =>
-  Effect.callback<never, CapabilityError>((resume) => {
+  Effect.callback<never, ToolInvocationFailure>((resume) => {
     const cancel = () =>
-      resume(Effect.fail(new CapabilityError("wait", new Error("Wait aborted"))));
+      resume(Effect.fail(ToolInvocationFailure.from("wait", new Error("Wait aborted"))));
     if (signal.aborted) cancel();
     else signal.addEventListener("abort", cancel, { once: true });
     return Effect.sync(() => signal.removeEventListener("abort", cancel));
@@ -489,7 +480,7 @@ const readBody = (reader: ReadableStreamDefaultReader<Uint8Array>, maxBytes: num
     while (true) {
       const next = yield* Effect.tryPromise({
         try: () => reader.read(),
-        catch: (cause) => new CapabilityError("http", cause),
+        catch: (cause) => ToolInvocationFailure.from("http", cause),
       });
       if (next.done) break;
       const remaining = maxBytes - total;
@@ -607,7 +598,7 @@ export const createCapabilities = (
       execute(raw: Static<typeof HttpSchema>, call) {
         const program = Effect.try({
           try: () => Value.Parse(HttpSchema, raw),
-          catch: (cause) => new CapabilityError("http", cause),
+          catch: (cause) => ToolInvocationFailure.from("http", cause),
         }).pipe(
           Effect.flatMap((args) => {
             const timeoutMs = Math.max(1, Math.floor(args.timeoutMs ?? config.httpTimeoutMs));
@@ -626,7 +617,7 @@ export const createCapabilities = (
                     if (args.body !== undefined) request.body = args.body;
                     return fetch(args.url, request);
                   },
-                  catch: (cause) => new CapabilityError("http", cause),
+                  catch: (cause) => ToolInvocationFailure.from("http", cause),
                 }).pipe(
                   Effect.flatMap((response) =>
                     limitedBody(response, config.maxHttpResultBytes).pipe(
@@ -655,7 +646,7 @@ export const createCapabilities = (
       execute(raw: Static<typeof WaitSchema>, call) {
         const program = Effect.try({
           try: () => Value.Parse(WaitSchema, raw),
-          catch: (cause) => new CapabilityError("wait", cause),
+          catch: (cause) => ToolInvocationFailure.from("wait", cause),
         }).pipe(
           Effect.flatMap((args) =>
             withActivity(
@@ -680,7 +671,7 @@ export const createCapabilities = (
       execute(raw: Static<typeof ThinkSchema>, call) {
         const program = Effect.try({
           try: () => Value.Parse(ThinkSchema, raw),
-          catch: (cause) => new CapabilityError("think", cause),
+          catch: (cause) => ToolInvocationFailure.from("think", cause),
         }).pipe(
           Effect.flatMap((args) => {
             const pause = {
@@ -710,7 +701,7 @@ export const createCapabilities = (
       execute(raw: Static<typeof SnapshotSchema>, call) {
         const program = Effect.try({
           try: () => Value.Parse(SnapshotSchema, raw),
-          catch: (cause) => new CapabilityError("snapshot", cause),
+          catch: (cause) => ToolInvocationFailure.from("snapshot", cause),
         }).pipe(
           Effect.flatMap((args) =>
             withActivity(
@@ -722,7 +713,7 @@ export const createCapabilities = (
               },
               () =>
                 snapshots.capture(args.paths).pipe(
-                  Effect.mapError((cause) => new CapabilityError("snapshot", cause)),
+                  Effect.mapError((cause) => ToolInvocationFailure.from("snapshot", cause)),
                   Effect.map((value) => ({
                     value,
                     summary: `${value.id} · ${value.files.length} ${value.files.length === 1 ? "file" : "files"}`,
@@ -741,12 +732,12 @@ export const createCapabilities = (
       execute(raw: Static<typeof UndoSchema>, call) {
         const program = Effect.try({
           try: () => Value.Parse(UndoSchema, raw),
-          catch: (cause) => new CapabilityError("undo", cause),
+          catch: (cause) => ToolInvocationFailure.from("undo", cause),
         }).pipe(
           Effect.flatMap((args) =>
             withActivity(source, call, { target: args.snapshot }, () =>
               snapshots.undo(args.snapshot).pipe(
-                Effect.mapError((cause) => new CapabilityError("undo", cause)),
+                Effect.mapError((cause) => ToolInvocationFailure.from("undo", cause)),
                 Effect.map((value) => ({
                   value,
                   summary: `${value.restored.length} ${value.restored.length === 1 ? "file" : "files"} restored`,

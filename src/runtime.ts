@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
-  ScriptValidationError,
   isAwaitCall,
   isCallStep,
   previewValue,
@@ -19,6 +18,7 @@ import {
 import { Chunk, Effect, Fiber, Ref, Schema } from "effect";
 
 import { closeQueued, createCapabilities, pulse, queuePlan } from "./capabilities.js";
+import { RuntimeDefect, SourceValidationFailure } from "./errors.js";
 import { SnapshotStore } from "./snapshots.js";
 import type {
   Activity,
@@ -35,16 +35,6 @@ export interface ExecutionResult {
 }
 
 type RunOutcome = { kind: "run"; result: ExecuteResult } | { kind: "session"; result: StartResult };
-
-class RuntimeFailure extends Error {
-  readonly source: unknown;
-
-  constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause), { cause });
-    this.name = "RuntimeFailure";
-    this.source = cause;
-  }
-}
 
 const isString = Schema.is(Schema.String);
 const elapsedSince = (startedAt: number) => Math.max(0, Math.round(performance.now() - startedAt));
@@ -323,9 +313,9 @@ export class CallScriptRuntime {
               ...Object.keys(sessionVariables(this.scope.state)),
             ],
           }),
-        catch: (cause) => new RuntimeFailure(cause),
+        catch: SourceValidationFailure.from,
       });
-      const runPlan = (plan: Script): Effect.Effect<RunOutcome, RuntimeFailure> => {
+      const runPlan = (plan: Script): Effect.Effect<RunOutcome, RuntimeDefect> => {
         const usesSession =
           plan.await === false ||
           plan.steps.some(
@@ -344,7 +334,7 @@ export class CallScriptRuntime {
                       },
                     }),
                   ),
-                catch: (cause) => new RuntimeFailure(cause),
+                catch: RuntimeDefect.from,
               }),
             ),
             Effect.map((result): RunOutcome => ({ kind: "session", result })),
@@ -355,7 +345,7 @@ export class CallScriptRuntime {
             this.#invocations.run(invocation, () =>
               this.engine.run({ script: plan, retainOutputs: "live" }, this.scope),
             ),
-          catch: (cause) => new RuntimeFailure(cause),
+          catch: RuntimeDefect.from,
         }).pipe(Effect.map((result): RunOutcome => ({ kind: "run", result })));
       };
       const attempt = validated.pipe(
@@ -372,7 +362,7 @@ export class CallScriptRuntime {
       );
       return yield* Effect.matchEffect(attempt, {
         onFailure: (failure) => {
-          const invalid = failure.source instanceof ScriptValidationError;
+          const invalid = failure._tag === "SourceValidationFailure";
           const background = this.#session.digest();
           return Effect.sync(() => this.reconcileBackground(background, controller)).pipe(
             Effect.andThen(closeQueued(invocation)),
@@ -407,7 +397,8 @@ export class CallScriptRuntime {
 
   private invocation() {
     const invocation = this.#invocations.getStore();
-    if (invocation === undefined) throw new Error("CallScript tool invoked outside an execution");
+    if (invocation === undefined)
+      throw RuntimeDefect.from(new Error("CallScript tool invoked outside an execution"));
     return invocation;
   }
 }
