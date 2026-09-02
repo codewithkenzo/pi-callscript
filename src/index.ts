@@ -9,14 +9,7 @@ import { Value } from "typebox/value";
 
 import { isMode, loadConfig } from "./config.js";
 import { CallScriptRuntime } from "./runtime.js";
-import {
-  EXTENSION_TOOLS,
-  MAIN_TOOL,
-  STATE_ENTRY,
-  type Mode,
-  type PersistedMode,
-  type RunDetails,
-} from "./types.js";
+import { MAIN_TOOL, STATE_ENTRY, type Mode, type PersistedMode, type RunDetails } from "./types.js";
 import { renderScriptCall, renderScriptResult } from "./ui.js";
 
 const ExecuteSchema = Type.Object(
@@ -118,8 +111,6 @@ const RunDetailsSchema = Type.Object(
   { additionalProperties: true },
 );
 
-const extensionToolSet: ReadonlySet<string> = new Set(EXTENSION_TOOLS);
-
 export const isRunDetails = <T>(value: T): value is T & RunDetails =>
   Value.Check(RunDetailsSchema, value);
 
@@ -168,20 +159,22 @@ export const CALLSCRIPT_TOOL_DESCRIPTION =
   "Execute one bounded, inert JavaScript-shaped plan. Pi calls: read({path,offset?,limit?}) reads text or images; write({path,content}) writes one file; edit({path,edits}) replaces exact text; search({pattern,path?,glob?,ignoreCase?,literal?,context?,limit?}) searches file contents; find({pattern,path?,limit?}) finds paths; list({path?}) lists a directory; run({command,timeout?}) runs a shell command. Extra calls: http({url,method?,headers?,body?,timeoutMs?}) fetches bounded text; wait({milliseconds}) delays without blocking; think({note?}) yields control for a full reasoning turn—rerun the unchanged script to resume; snapshot({paths}) captures files; undo({snapshot}) restores them. Await dependencies, use Promise.all for independent calls, and return only useful results. Un-awaited calls become session jobs that can be joined later.";
 
 export const CALLSCRIPT_MODE_PROMPT =
-  "CallScript mode replaces the normal tools. Work in short evidence-driven phases: parallelize independent calls and await dependencies. Use think when later calls require judgment: a paused result returns control to you for reasoning; invoke callscript again with the unchanged script to resume from saved results. Use snapshot before changes that may need undo.";
+  "CallScript is available beside other Pi tools. Use it for bounded programs over its listed fixed capabilities. Use the owning Pi tool directly for Fabric, FFF, MCP, subagent, and other extension operations. Work in short evidence-driven phases: parallelize independent calls and await dependencies. Use think when later calls require judgment: a paused result returns control to you for reasoning; invoke callscript again with the unchanged script to resume from saved results. Use snapshot before changes that may need undo.";
+
+export const activeToolsForMode = (mode: Mode, currentTools: readonly string[]) => {
+  if (mode === "off") return currentTools.filter((name) => name !== MAIN_TOOL);
+  const activeTools = [...new Set(currentTools)];
+  if (!activeTools.includes(MAIN_TOOL)) activeTools.push(MAIN_TOOL);
+  return activeTools;
+};
 
 export default async function callscriptExtension(pi: ExtensionAPI) {
   let config = await Effect.runPromise(loadConfig(process.cwd()));
   let runtime = new CallScriptRuntime(process.cwd(), config);
   let mode: Mode = config.mode;
-  let normalTools: string[] = [];
-
-  const captureNormalTools = () => {
-    normalTools = pi.getActiveTools().filter((name) => !extensionToolSet.has(name));
-  };
 
   const applyMode = (ctx: ExtensionContext) => {
-    pi.setActiveTools(mode === "on" ? [...EXTENSION_TOOLS] : normalTools);
+    pi.setActiveTools(activeToolsForMode(mode, pi.getActiveTools()));
     ctx.ui.setStatus(STATE_ENTRY, mode === "on" ? "callscript" : undefined);
   };
 
@@ -235,7 +228,6 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    captureNormalTools();
     await Effect.runPromise(rebuild(ctx, false));
     mode = restoredMode(ctx) ?? config.mode;
     applyMode(ctx);
@@ -254,7 +246,7 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
       const command = args.trim().toLowerCase();
       if (command === "status") {
         ctx.ui.notify(
-          `CallScript is ${mode}; ${runtime.tools.length} tools; concurrency ${config.limits.maxConcurrency}.`,
+          `CallScript is ${mode} and additive; ${runtime.tools.length} fixed tools; concurrency ${config.limits.maxConcurrency}.`,
         );
         return;
       }
@@ -271,7 +263,6 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
       }
       const nextMode = command.length === 0 ? (mode === "on" ? "off" : "on") : command;
       if (isMode(nextMode)) {
-        if (mode === "off" && nextMode === "on") captureNormalTools();
         mode = nextMode;
       } else {
         ctx.ui.notify("Usage: /callscript [on|off|status|reload|reset]", "warning");
