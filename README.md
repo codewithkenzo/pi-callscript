@@ -9,7 +9,7 @@
 [![Bun](https://img.shields.io/badge/Bun-1.4-fbf0df?style=flat-square&logo=bun&logoColor=000)](https://bun.com/)
 [![Effect](https://img.shields.io/badge/Effect-v4_RC-8a2be2?style=flat-square)](https://effect.website/)
 
-`pi-callscript` is a one-tool code mode for Pi that composes reads, searches, commands, and edits into structured execution flows. It supports parallel and dependent calls, reasoning checkpoints, background work, reversible edits, and a compact live trace—reducing round trips without hiding execution state.
+`pi-callscript` adds one code-planning tool to Pi. It composes reads, searches, commands, and edits into structured execution flows. It supports parallel and dependent calls, reasoning checkpoints, background work, reversible edits, and a compact live trace. Other active Pi tools stay visible.
 
 ## Install
 
@@ -29,7 +29,7 @@ Pi and Node.js 22.19 or newer are required.
 
 ## Use
 
-CallScript mode starts enabled. Ask Pi to use it, or manage it directly:
+CallScript starts enabled in additive mode. Ask Pi to use it, or manage it directly:
 
 ```text
 /callscript status
@@ -39,11 +39,15 @@ CallScript mode starts enabled. Ask Pi to use it, or manage it directly:
 /callscript reset
 ```
 
-The extension exposes one tool: `callscript`. It composes these Pi operations:
+`on` adds one `callscript` entry to the current active tool list. Repeated `on` commands do not create duplicates. `off` removes only `callscript`. Each transition uses the current active list, so tools added or removed by other owners keep their current state.
+
+> CallScript is available beside other Pi tools. Use it for bounded programs over its listed fixed capabilities. Use the owning Pi tool directly for Fabric, FFF, MCP, subagent, and other extension operations.
+
+The extension exposes one fixed-capability tool: `callscript`. It supports these file and process calls:
 
 `read` · `write` · `edit` · `search` · `find` · `list` · `run`
 
-It also adds:
+It also supports these control and network calls:
 
 - `http` — fetch bounded response text.
 - `wait` — delay asynchronously without blocking Pi.

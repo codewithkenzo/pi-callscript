@@ -7,6 +7,10 @@ description: Use Pi CallScript to compose multiple coding-tool actions into deli
 
 Requires the `pi-callscript` Pi extension and its `callscript` tool.
 
+> CallScript is available beside other Pi tools. Use it for bounded programs over its listed fixed capabilities. Use the owning Pi tool directly for Fabric, FFF, MCP, subagent, and other extension operations.
+
+`on` adds one `callscript` entry to current active tools. `off` removes only `callscript`. Both transitions preserve current state owned by other extensions.
+
 ## What it solves
 
 Ordinary tool use alternates between the model and one tool result at a time. That is useful when every next action is uncertain, but slow and context-heavy when several calls are already predictable.
@@ -164,7 +168,7 @@ Snapshots are session-local. Capture every file the workflow may change, includi
 
 ## Protect context and prompt-cache efficiency
 
-- Keep the tool surface stable; use `callscript` instead of alternating between many tool schemas.
+- Use `callscript` for bounded programs over its fixed capabilities. Use other Pi tools through their owning extension.
 - Put independent calls in one wave so their results enter one reasoning turn.
 - Reuse named session bindings rather than re-reading unchanged evidence.
 - Resume a `think` checkpoint with the exact script so settled work is reused.
