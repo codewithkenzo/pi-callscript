@@ -11,11 +11,14 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 
+import { loadConfig } from "../src/config.js";
+import { ConfigError } from "../src/errors.js";
 import { CallScriptRuntime } from "../src/runtime.js";
 import {
   EXTENSION_TOOLS,
   type ExtensionConfig,
   type InvocationInput,
+  type JobReceipt,
   type RunDetails,
 } from "../src/types.js";
 
@@ -87,6 +90,26 @@ afterEach(async () => {
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );
+});
+
+describe("configuration boundary", () => {
+  test("decodes external JSON through schema before applying output budget", async () => {
+    const cwd = await workspace();
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(join(cwd, ".pi", "callscript.json"), '{"maxOutputBytes":4096}');
+
+    const loaded = await Effect.runPromise(loadConfig(cwd));
+
+    expect(loaded.maxOutputBytes).toBe(4_096);
+  });
+
+  test("returns tagged config failure for invalid external JSON shape", async () => {
+    const cwd = await workspace();
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(join(cwd, ".pi", "callscript.json"), '{"maxOutputBytes":"large"}');
+
+    await expect(Effect.runPromise(loadConfig(cwd))).rejects.toBeInstanceOf(ConfigError);
+  });
 });
 
 describe("CallScriptRuntime", () => {
@@ -265,6 +288,7 @@ return point;
 
     expect(result.isError, result.text).toBe(false);
     expect(result.details.activity.at(-1)?.phase).toBe("done");
+    await Effect.runPromise(Effect.sleep(1_050));
     expect(updateAttempts).toBe(1);
   });
 
@@ -362,11 +386,97 @@ return tail;
 
     expect(result.isError).toBe(true);
     expect(result.details.activity.at(-1)?.phase).toBe("error");
+    expect(result.details.active).toBe(0);
+    expect(result.details.cancelled).toBe(1);
+  });
+
+  test("settles active and queued operations once on host abort", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+
+    const result = await Effect.runPromise(
+      runtime.execute(
+        `
+const first = await wait({ milliseconds: 1000 });
+const second = await wait({ milliseconds: 1000 });
+return second;
+`,
+        invocation(cwd, undefined, controller.signal),
+      ),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.details.calls).toBe(1);
+    expect(result.details.completed).toBe(1);
+    expect(result.details.active).toBe(0);
+    expect(result.details.queued).toBe(0);
+    expect(result.details.cancelled).toBe(2);
+    expect(
+      result.details.activity.filter(
+        (event) => event.phase === "skipped" && event.result === "host abort before launch",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("keeps progress payloads bounded as operation count grows", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const updates: RunDetails[] = [];
+    const delays = Array.from({ length: 100 }, () => 0);
+    const result = await Effect.runPromise(
+      runtime.execute(
+        `const delays = ${JSON.stringify(delays)}; const values = await Promise.all(delays.slice(0, 100).map(milliseconds => wait({ milliseconds }))); return values.length;`,
+        invocation(cwd, (update) => updates.push(update.details)),
+      ),
+    );
+
+    expect(result.isError, result.text).toBe(false);
+    expect(result.details.calls).toBe(100);
+    expect(result.details.done).toBe(100);
+    expect(result.details.active).toBe(0);
+    expect(result.details.activity.length).toBeLessThanOrEqual(24);
+    expect(result.details.activityHidden).toBeGreaterThan(0);
+    expect(
+      Math.max(...updates.map((update) => Buffer.byteLength(JSON.stringify(update), "utf8"))),
+    ).toBeLessThan(8_192);
+    expect(updates.every((update) => update.activity.length <= 12)).toBe(true);
+  });
+
+  test("keeps complete host envelope below measured 24 KiB sidecar boundary", async () => {
+    const cwd = await workspace();
+    await writeFile(join(cwd, "large-output.txt"), `${"x".repeat(100)}🙂\n`.repeat(30_000));
+    const runtime = new CallScriptRuntime(cwd, config);
+    const result = await Effect.runPromise(
+      runtime.execute(
+        'return await read({ path: "large-output.txt", offset: 1, limit: 30000 });',
+        invocation(cwd),
+      ),
+    );
+    const envelope = {
+      content: [{ type: "text", text: result.text }],
+      details: result.details,
+      isError: result.isError,
+    };
+
+    expect(result.isError, result.text).toBe(false);
+    expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(10_240);
+    expect(Buffer.byteLength(JSON.stringify(envelope), "utf8")).toBeLessThan(24_576);
+    expect(
+      result.details.presentation?.receipt.hiddenBytes,
+      JSON.stringify({
+        receipt: result.details.presentation?.receipt,
+        textBytes: Buffer.byteLength(result.text, "utf8"),
+      }),
+    ).toBeGreaterThan(0);
+    expect(result.details.retainedState?.omittedBytes).toBeGreaterThan(2_048);
   });
 
   test("detaches an un-awaited job and joins it from a later script", async () => {
     const cwd = await workspace();
-    const runtime = new CallScriptRuntime(cwd, config);
+    const settlement = Promise.withResolvers<JobReceipt>();
+    const runtime = new CallScriptRuntime(cwd, config, settlement.resolve);
     const started = await Effect.runPromise(
       runtime.execute(
         `
@@ -380,6 +490,25 @@ return { started: true };
 
     expect(started.isError, started.text).toBe(false);
     expect(started.details.background?.job?.status).toBe("pending");
+    expect(started.details.jobs).toContainEqual({
+      id: "job",
+      label: "wait · job",
+      status: "running",
+      repeatSafe: true,
+    });
+
+    const settled = await settlement.promise;
+    expect(settled).toEqual({
+      id: "job",
+      label: "wait · job",
+      status: "done",
+      repeatSafe: true,
+      output: { waitedMs: 250 },
+    });
+    expect(Buffer.byteLength(JSON.stringify(settled.output), "utf8")).toBeLessThanOrEqual(4_096);
+    const restored = new CallScriptRuntime(cwd, config);
+    await Effect.runPromise(restored.restoreJobs([settled]));
+    expect(restored.jobs()).toEqual([settled]);
 
     const joined = await Effect.runPromise(
       runtime.execute("const result = await job; return result;", invocation(cwd)),
@@ -533,6 +662,165 @@ return ready;
     await expect(readFile(join(cwd, "first.txt"), "utf8")).resolves.toBe("after");
   });
 
+  test("returns exact navigation receipts for first, middle, final, and tail reads from ctx.cwd", async () => {
+    const constructorCwd = await workspace();
+    const invocationCwd = await workspace();
+    await writeFile(join(invocationCwd, "lines.txt"), "one\ntwo\nthree\nfour\nfive");
+    const runtime = new CallScriptRuntime(constructorCwd, config);
+
+    const scripts = [
+      'return await read({ path: "lines.txt", limit: 2 });',
+      'return await read({ path: "lines.txt", offset: 3, limit: 2 });',
+      'return await read({ path: "lines.txt", offset: 5 });',
+      'return await read({ path: "lines.txt", tail: 2 });',
+    ];
+    const results = [];
+    for (const script of scripts)
+      results.push(await Effect.runPromise(runtime.execute(script, invocation(invocationCwd))));
+
+    expect(results.map((result) => result.isError)).toEqual([false, false, false, false]);
+    expect(results[0]?.text).toContain(
+      "[Read lines 1-2 of 5; previousOffset=none; nextOffset=3; truncation=limit]",
+    );
+    expect(results[1]?.text).toContain(
+      "[Read lines 3-4 of 5; previousOffset=1; nextOffset=5; truncation=limit]",
+    );
+    expect(results[2]?.text).toContain(
+      "[Read lines 5-5 of 5; previousOffset=1; nextOffset=none; truncation=none]",
+    );
+    expect(results[3]?.text).toContain(
+      "[Read lines 4-5 of 5; previousOffset=2; nextOffset=none; truncation=tail]",
+    );
+  });
+
+  test("returns exact navigation receipts for newline-terminated files", async () => {
+    const cwd = await workspace();
+    await writeFile(join(cwd, "lines.txt"), "one\ntwo\nthree\nfour\nfive\n");
+    const runtime = new CallScriptRuntime(cwd, config);
+    const scripts = [
+      'return await read({ path: "lines.txt", limit: 2 });',
+      'return await read({ path: "lines.txt", offset: 3, limit: 2 });',
+      'return await read({ path: "lines.txt", offset: 5 });',
+      'return await read({ path: "lines.txt", tail: 2 });',
+    ];
+    const results = [];
+    for (const script of scripts)
+      results.push(await Effect.runPromise(runtime.execute(script, invocation(cwd))));
+
+    expect(results.map((result) => result.isError)).toEqual([false, false, false, false]);
+    expect(results[0]?.text).toContain(
+      "[Read lines 1-2 of 5; previousOffset=none; nextOffset=3; truncation=limit]",
+    );
+    expect(results[1]?.text).toContain(
+      "[Read lines 3-4 of 5; previousOffset=1; nextOffset=5; truncation=limit]",
+    );
+    expect(results[2]?.text).toContain(
+      "[Read lines 5-5 of 5; previousOffset=1; nextOffset=none; truncation=none]",
+    );
+    expect(results[2]?.text).toContain("five\n\n[Read lines");
+    expect(results[3]?.text).toContain(
+      "[Read lines 4-5 of 5; previousOffset=2; nextOffset=none; truncation=tail]",
+    );
+    expect(results[3]?.text).toContain("four\nfive\n\n[Read lines");
+  });
+
+  test("preserves one empty line for empty files", async () => {
+    const cwd = await workspace();
+    await writeFile(join(cwd, "empty.txt"), "");
+    const runtime = new CallScriptRuntime(cwd, config);
+    const results = await Promise.all(
+      [
+        'return await read({ path: "empty.txt" });',
+        'return await read({ path: "empty.txt", tail: 1 });',
+      ].map((script) => Effect.runPromise(runtime.execute(script, invocation(cwd)))),
+    );
+
+    expect(results.map((result) => result.isError)).toEqual([false, false]);
+    for (const result of results) {
+      expect(result.text).toContain(
+        "[Read lines 1-1 of 1; previousOffset=none; nextOffset=none; truncation=none]",
+      );
+    }
+  });
+
+  test("reports all semantic boundary issues before queue creation", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const result = await Effect.runPromise(
+      runtime.execute(
+        'const changed = await write({ path: "should-not-exist.txt", content: "no" }); const mixed = await read({ path: "x", tail: 2, offset: 1 }); const remote = await http({ url: "relative", method: "GET", body: "bad" }); return { changed, mixed, remote };',
+        invocation(cwd),
+      ),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.details.calls).toBe(0);
+    expect(result.text).toContain("CS005");
+    expect(result.text).toContain("URL must be absolute");
+    expect(result.text).toContain("GET must not include body");
+    await expect(readFile(join(cwd, "should-not-exist.txt"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  test("serializes overlapping writes and reports conditional selection", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const writes = await Effect.runPromise(
+      runtime.execute(
+        'const changed = await Promise.all([write({ path: "same.txt", content: "first" }), write({ path: "same.txt", content: "second" })]); return changed.length;',
+        invocation(cwd),
+      ),
+    );
+    expect(writes.isError, writes.text).toBe(false);
+    await expect(readFile(join(cwd, "same.txt"), "utf8")).resolves.toBe("second");
+
+    const branch = await Effect.runPromise(
+      runtime.execute(
+        "const choice = await wait({ milliseconds: 0 }); if (choice.waitedMs === 0) { const selected = await wait({ milliseconds: 0 }); return selected; } else { const skipped = await wait({ milliseconds: 1 }); return skipped; }",
+        invocation(cwd),
+      ),
+    );
+    expect(branch.details.activity.some((event) => event.selection === "selected")).toBe(true);
+    expect(
+      branch.details.activity.some((event) => event.selection === "skipped"),
+      JSON.stringify(branch.details.activity),
+    ).toBe(true);
+  });
+
+  test("recovers through try/catch and restores typed job states", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const recovered = await Effect.runPromise(
+      runtime.execute(
+        'try { const missing = await read({ path: "missing.txt" }); return missing; } catch (error) { return { recovered: error.message.includes("missing") }; }',
+        invocation(cwd),
+      ),
+    );
+    expect(recovered.isError, recovered.text).toBe(false);
+    expect(JSON.parse(recovered.text)).toEqual({ recovered: true });
+
+    await Effect.runPromise(
+      runtime.restoreJobs([
+        { id: "running", label: "wait · check", status: "running", repeatSafe: true },
+        { id: "done", label: "read · file", status: "done", repeatSafe: true, output: "ok" },
+        { id: "failed", label: "read · bad", status: "failed", repeatSafe: true, error: "bad" },
+        { id: "cancelled", label: "wait · old", status: "cancelled", repeatSafe: true },
+      ]),
+    );
+    expect(runtime.jobs().map((job) => job.status)).toEqual([
+      "cancelled",
+      "done",
+      "failed",
+      "unavailable",
+    ]);
+    const join = await Effect.runPromise(
+      runtime.execute("const result = await running; return result;", invocation(cwd)),
+    );
+    expect(join.isError).toBe(true);
+    expect(join.text).toContain("CS007");
+  });
+
   test("rejects invalid scripts before dispatch", async () => {
     const cwd = await workspace();
     const runtime = new CallScriptRuntime(cwd, config);
@@ -543,5 +831,6 @@ return ready;
     expect(result.isError).toBe(true);
     expect(result.details.status).toBe("invalid");
     expect(result.details.calls).toBe(0);
+    expect(result.text).toMatch(/^CS00[1-4]:/);
   });
 });

@@ -46,7 +46,7 @@ Prefer two clear phases over one giant script. Use stable, descriptive binding n
 
 Pi-native operations:
 
-- `read({ path, offset?, limit? })`
+- `read({ path, offset?, limit? })` or `read({ path, tail })`; never combine `tail` and `offset`
 - `write({ path, content })`
 - `edit({ path, edits: [{ oldText, newText }] })`
 - `search({ pattern, path?, glob?, ignoreCase?, literal?, context?, limit? })`
@@ -61,8 +61,11 @@ CallScript additions:
 - `think({ note? })` returns control for a full model reasoning turn.
 - `snapshot({ paths })` captures exact file contents and remembers missing files.
 - `undo({ snapshot })` restores a session-local snapshot.
+- `tools({ query? })` inspects fixed CallScript capability names only.
 
 Keep reads narrow with `offset` and `limit`, cap searches, and give commands a realistic timeout in seconds.
+
+Each text read reports shown range, total lines, previous offset, next offset, and truncation reason. Relative paths resolve from current invocation `ctx.cwd`.
 
 ## Compose calls, do not serialize them by habit
 
@@ -116,6 +119,8 @@ return { files: paths, count: sources.length };
 
 Use `const` bindings only. Do not use imports, globals, reassignment, unbounded loops, or arbitrary evaluation. When validation rejects a construct, replace only that construct with the suggested CallScript form.
 
+Supported forms: top-level `const`, direct `await`, static `Promise.all`, bounded fan-out, dependencies, guards, `try/catch`, and unchanged-script `think` resume. Unsupported forms: tagged templates, wrapper callbacks, computed callback bodies, regex literals, and per-call `.catch`. Stable `CS` validation codes include one valid replacement.
+
 ## Publish once, continue later
 
 Bindings retained by a run's returned projection survive in the current CallScript session. Use this to split a large job at a natural reasoning boundary without repeating the first phase.
@@ -154,6 +159,8 @@ return { checks: result };
 ```
 
 Never leave a background binding unobserved. Join it, inspect its final state, or reset the session.
+
+Use `/callscript jobs` to inspect stable ID, human label, `running`, `done`, `failed`, `cancelled`, or `unavailable` state. Process-local running work restores as `unavailable`. Unknown or expired joins return one typed recovery action. Never retry mutating work unless it is explicitly repeat-safe. `/callscript reset` cancels owned jobs and clears retained state.
 
 ## Make risky work recoverable
 

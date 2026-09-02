@@ -45,6 +45,41 @@ describe("CallScript UI", () => {
     expect(expanded).toContain("const value7");
   });
 
+  test("hides unselected branch when collapsed and marks it skipped when expanded", () => {
+    const activity: Activity[] = [
+      {
+        sequence: 1,
+        atMs: 0,
+        step: "unusedBranch",
+        tool: "write",
+        phase: "queued",
+        selection: "selected",
+        target: "unused.txt",
+      },
+      {
+        sequence: 2,
+        atMs: 1,
+        step: "unusedBranch",
+        tool: "write",
+        phase: "skipped",
+        selection: "skipped",
+        target: "unused.txt",
+        result: "branch not selected",
+      },
+    ];
+    const collapsed = render(
+      renderScriptResult("done", runDetails(activity), false, false, false, theme),
+    );
+    const expanded = render(
+      renderScriptResult("done", runDetails(activity), true, false, false, theme),
+    );
+
+    expect(collapsed).toContain("1 not run");
+    expect(collapsed).not.toContain("unused.txt");
+    expect(expanded).toContain("unused.txt");
+    expect(expanded).toContain("branch not selected");
+  });
+
   test("shows each target and its settlement as a child result", () => {
     const activity: Activity[] = [
       {
@@ -331,5 +366,118 @@ describe("CallScript UI", () => {
     expect(compact.length).toBeLessThan(260);
     expect(compact).toContain("Structured result");
     expect(compact).not.toContain("{");
+  });
+
+  test("projects incomplete composing source without counting comments or strings", () => {
+    const composing = render(
+      renderScriptCall(
+        '// read({ path: "ignored" })\nconst note = "write({})";\nawait read({ path: "src/runtime.ts" });\nawait search({ pattern: "update callback"',
+        false,
+        "composing",
+        theme,
+      ),
+    );
+
+    expect(composing).toContain("CallScript · composing");
+    expect(composing).toContain("Read  src/runtime.ts");
+    expect(composing).toContain("Search  update callback");
+    expect(composing).toContain("receiving next operation");
+    expect(composing).not.toContain("ignored");
+  });
+
+  test("renders invalid source once without phantom plan", () => {
+    const details = runDetails([]);
+    const invalid: RunDetails = { ...details, status: "invalid" };
+    const output = render(
+      renderScriptResult(
+        "CS102 line 1, column 8: invalid fan-out. Use: await read({ path: item })",
+        invalid,
+        false,
+        false,
+        true,
+        theme,
+      ),
+    );
+
+    expect(output).toContain("Invalid source");
+    expect(output).toContain("line 1, column 8");
+    expect(output).toContain("Use:");
+    expect(output).not.toContain("planned");
+    expect(output).not.toContain("Result");
+  });
+
+  test("shows cancellation as distinct state with explicit plural labels", () => {
+    const activity: Activity[] = [
+      { sequence: 1, atMs: 0, step: "wait", tool: "wait", phase: "start", target: "1000 ms" },
+      {
+        sequence: 2,
+        atMs: 5,
+        step: "wait",
+        tool: "wait",
+        phase: "error",
+        target: "1000 ms",
+        error: "Wait aborted",
+        elapsedMs: 5,
+      },
+    ];
+    const output = render(
+      renderScriptResult(
+        "Wait aborted",
+        { ...runDetails(activity, 5), cancelled: 1 },
+        false,
+        false,
+        true,
+        theme,
+      ),
+    );
+
+    expect(output).toContain("1 cancelled");
+    expect(output).toContain("cancelled");
+    expect(output).not.toContain("1 failed");
+  });
+
+  test("renders native edit diff with bounded hunk totals", () => {
+    const activity: Activity[] = [
+      {
+        sequence: 1,
+        atMs: 0,
+        step: "edit",
+        tool: "edit",
+        phase: "start",
+        target: "src/example.ts",
+      },
+      {
+        sequence: 2,
+        atMs: 11,
+        step: "edit",
+        tool: "edit",
+        phase: "done",
+        target: "src/example.ts",
+        result: "applied",
+        elapsedMs: 11,
+        presentation: {
+          kind: "edit",
+          diff: "@@ -1,2 +1,3 @@\n const value = 1;\n-old();\n+new();\n+next();\n@@ -10,1 +11,2 @@\n-oldLater();\n+newLater();",
+          patch: "@@ -1,2 +1,3 @@",
+          firstChangedLine: 2,
+          hunkCount: 2,
+          addedLines: 3,
+          removedLines: 2,
+        },
+      },
+    ];
+    const output = render(
+      renderScriptResult("done", runDetails(activity, 11), false, false, false, theme),
+    );
+
+    expect(output).toContain("2 hunks · +3 -2 · line 2");
+    expect(output).toContain("… 1 hunk hidden");
+    expect(output).toContain("+new();");
+    expect(output).not.toContain("newLater");
+    const expanded = render(
+      renderScriptResult("done", runDetails(activity, 11), true, false, false, theme),
+    );
+    expect(expanded).toContain("newLater");
+    expect(expanded).not.toContain("patch");
   });
 });

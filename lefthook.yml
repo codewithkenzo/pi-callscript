@@ -3,11 +3,11 @@ pre-commit:
   commands:
     format:
       glob: "*.{ts,tsx,js,mjs,json,jsonc,md,yml,yaml}"
-      run: "bunx oxfmt {staged_files} --write"
+      run: "./node_modules/.bin/oxfmt {staged_files} --write"
       stage_fixed: true
     lint:
       glob: "*.{ts,tsx,js,mjs}"
-      run: "bunx oxlint --deny-warnings {staged_files}"
+      run: "./node_modules/.bin/oxlint --deny-warnings {staged_files}"
 
 pre-push:
   commands:

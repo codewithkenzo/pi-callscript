@@ -2,6 +2,8 @@ import type { AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/
 import type { RunDigestEntry, RunState } from "callscript";
 import type { Chunk, Ref } from "effect";
 
+import type { ActivityPresentation, OperationPresentationDetails } from "./presentation.js";
+
 export const MODES = ["off", "on"] as const;
 export type Mode = (typeof MODES)[number];
 
@@ -16,6 +18,7 @@ export interface ExtensionConfig {
   };
   httpTimeoutMs: number;
   maxHttpResultBytes: number;
+  maxOutputBytes?: number;
 }
 
 export interface Activity {
@@ -32,6 +35,19 @@ export interface Activity {
   expectedMs?: number;
   result?: string;
   error?: string;
+  presentation?: ActivityPresentation;
+  selection?: "selected" | "skipped";
+}
+
+export type JobStatus = "running" | "done" | "failed" | "cancelled" | "unavailable";
+
+export interface JobReceipt {
+  id: string;
+  label: string;
+  status: JobStatus;
+  repeatSafe: boolean;
+  output?: unknown;
+  error?: string;
 }
 
 export interface RunDetails {
@@ -42,15 +58,30 @@ export interface RunDetails {
   calls: number;
   completed: number;
   active: number;
+  queued?: number;
+  done?: number;
+  failed?: number;
+  cancelled?: number;
+  skipped?: number;
   activity: Activity[];
+  activityHidden?: number;
+  presentation?: OperationPresentationDetails;
+  retainedState?: { readonly omittedBytes: number };
   state?: RunState;
   background?: Record<string, RunDigestEntry>;
+  jobs?: JobReceipt[];
 }
 
 export interface ActivityState {
   events: Chunk.Chunk<Activity>;
   calls: number;
   completed: number;
+  queued: number;
+  active: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+  skipped: number;
 }
 
 export interface Invocation {
@@ -62,12 +93,13 @@ export interface Invocation {
   lastUpdateAt: Ref.Ref<number>;
   streamOpen: Ref.Ref<boolean>;
   controller: AbortController;
+  jobs: () => JobReceipt[];
   startedAt: number;
 }
 
 export type InvocationInput = Omit<
   Invocation,
-  "activity" | "lastUpdateAt" | "streamOpen" | "controller" | "startedAt"
+  "activity" | "lastUpdateAt" | "streamOpen" | "controller" | "jobs" | "startedAt"
 >;
 
 export interface PersistedMode {
@@ -75,6 +107,12 @@ export interface PersistedMode {
   mode: Mode;
 }
 
+export interface PersistedJobReceipt {
+  version: 1;
+  job: JobReceipt;
+}
+
 export const MAIN_TOOL = "callscript";
 export const EXTENSION_TOOLS = [MAIN_TOOL] as const;
 export const STATE_ENTRY = "pi-callscript";
+export const JOB_STATE_ENTRY = "pi-callscript-job";

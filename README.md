@@ -25,6 +25,36 @@ From GitHub:
 pi install git:github.com/codewithkenzo/pi-callscript
 ```
 
+For a local checkout:
+
+```sh
+pi install /path/to/pi-callscript
+```
+
+### Cold install
+
+Install before starting Pi, then start a new Pi process. Confirm package discovery with:
+
+```text
+/callscript status
+```
+
+A status message containing `CallScript is on and additive` confirms that the `callscript` tool is active.
+
+### Reload an active session
+
+After installing or changing package/config files while Pi is running, use Pi's public reload command:
+
+```text
+/reload
+
+/callscript status
+```
+
+`/reload` reloads configured extensions through Pi's public lifecycle. It does not give CallScript ownership of other extensions or active tools. `/callscript reload` only rebuilds CallScript state and reapplies its current mode; it does not install packages or reload Pi's package set.
+
+Pi owns cancellation. CallScript forwards an aborted turn to active fixed-capability work. Cancellation does not become a successful result.
+
 Pi and Node.js 22.19 or newer are required.
 
 ## Use
@@ -33,6 +63,9 @@ CallScript starts enabled in additive mode. Ask Pi to use it, or manage it direc
 
 ```text
 /callscript status
+/callscript jobs
+/callscript help
+/callscript doctor
 /callscript on
 /callscript off
 /callscript reload
@@ -54,6 +87,9 @@ It also supports these control and network calls:
 - `think` — return control to the model for a full reasoning turn, then resume the same plan.
 - `snapshot` — capture exact files before a change.
 - `undo` — restore a captured snapshot.
+- `tools` — inspect only fixed CallScript capability names. It does not discover Pi tools.
+
+`read({ path, tail })` reads final bounded lines. Do not combine `tail` with `offset`. Every text read returns shown range, total lines, previous offset, next offset, and truncation reason. Relative paths resolve from current invocation `ctx.cwd`.
 
 ```js
 const point = await snapshot({ paths: ["src/index.ts"] });
@@ -66,6 +102,10 @@ return { point, manifest, matches };
 ```
 
 At `think`, downstream operations stay queued while the tool call returns to the model. The model gets a normal reasoning turn with the first wave's results, then reissues the unchanged script to resume from the saved checkpoint—completed calls are not repeated.
+
+Supported source forms are top-level `const` declarations, direct `await`, static `Promise.all`, bounded `slice(...).map(...)` fan-out, dependencies, guards, `try/catch` recovery, and unchanged-script `think` resume. Unsupported forms are tagged templates, wrapper callbacks, computed callback bodies, regex literals, and per-call `.catch`. Validation returns stable `CS` codes plus one valid replacement.
+
+Un-awaited work returns stable job ID and label. `/callscript jobs` reports `running`, `done`, `failed`, `cancelled`, or `unavailable`. Reloaded process-local work becomes `unavailable`. Unknown or expired joins return one typed recovery action. CallScript never retries mutating work unless operation is explicitly repeat-safe. `/callscript reset` cancels owned work and clears retained state.
 
 Each operation stays visible in Pi's native tool view with its target, short result, elapsed time, timeout, and live state. Use Pi's normal `Ctrl+O` toggle for expanded details.
 
@@ -121,3 +161,22 @@ bun run smoke
 ```
 
 `nix develop` opens the included Linux/macOS development shell. The project pins Bun 1.4.0; CI verifies Windows, macOS, and Linux with Node.js 22.19.
+
+## Release proof
+
+Run complete local release proof with:
+
+```sh
+bun run check
+bun run smoke
+bun run pack:check
+bun run matrix
+```
+
+`matrix` runs nine isolated cold, source, dist, local-package, packed-package, user-extension, and reload cases. It checks fake ordered deltas, completion, cancellation state, package discovery, reload, and direct tool coexistence. Existing unit and presentation tests cover fixed read, parallel, invalid, partial, edit, cancel, think, job, reset, restore, compact, and expanded behavior.
+
+Recorded real-provider receipt (not rerun):
+
+`pi --no-session -e ./src/index.ts -p 'Reply with exactly CALLSCRIPT_STREAM_OK.'` → `CALLSCRIPT_STREAM_OK`
+
+Ticket 10 is retired. Node host profiling found no measured runtime bottleneck requiring optimization.

@@ -9,7 +9,16 @@ import { Value } from "typebox/value";
 
 import { isMode, loadConfig } from "./config.js";
 import { CallScriptRuntime } from "./runtime.js";
-import { MAIN_TOOL, STATE_ENTRY, type Mode, type PersistedMode, type RunDetails } from "./types.js";
+import {
+  JOB_STATE_ENTRY,
+  MAIN_TOOL,
+  STATE_ENTRY,
+  type JobReceipt,
+  type Mode,
+  type PersistedJobReceipt,
+  type PersistedMode,
+  type RunDetails,
+} from "./types.js";
 import { renderScriptCall, renderScriptResult } from "./ui.js";
 
 const ExecuteSchema = Type.Object(
@@ -87,6 +96,7 @@ const ActivitySchema = Type.Object(
     expectedMs: Type.Optional(Type.Number()),
     result: Type.Optional(Type.String()),
     error: Type.Optional(Type.String()),
+    selection: Type.Optional(Type.Union([Type.Literal("selected"), Type.Literal("skipped")])),
   },
   { additionalProperties: true },
 );
@@ -111,11 +121,40 @@ const RunDetailsSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const JobReceiptSchema = Type.Object(
+  {
+    id: Type.String(),
+    label: Type.String(),
+    status: Type.Union([
+      Type.Literal("running"),
+      Type.Literal("done"),
+      Type.Literal("failed"),
+      Type.Literal("cancelled"),
+      Type.Literal("unavailable"),
+    ]),
+    repeatSafe: Type.Boolean(),
+    output: Type.Optional(Type.Unknown()),
+    error: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
 export const isRunDetails = <T>(value: T): value is T & RunDetails =>
   Value.Check(RunDetailsSchema, value);
 
+const PersistedJobReceiptSchema = Type.Object(
+  {
+    version: Type.Literal(1),
+    job: JobReceiptSchema,
+  },
+  { additionalProperties: false },
+);
+
 const isPersistedMode = <T>(value: T): value is T & PersistedMode =>
   Value.Check(PersistedModeSchema, value);
+
+const isPersistedJobReceipt = <T>(value: T): value is T & PersistedJobReceipt =>
+  Value.Check(PersistedJobReceiptSchema, value);
 
 const restoredState = (ctx: ExtensionContext) => {
   const entries = ctx.sessionManager.getBranch();
@@ -145,6 +184,27 @@ const restoredMode = (ctx: ExtensionContext) => {
   return undefined;
 };
 
+const restoredJobs = (ctx: ExtensionContext): readonly JobReceipt[] | undefined => {
+  const jobs = new Map<string, JobReceipt>();
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === JOB_STATE_ENTRY) {
+      if (isPersistedJobReceipt(entry.data)) jobs.set(entry.data.job.id, entry.data.job);
+      continue;
+    }
+    if (
+      entry.type !== "message" ||
+      entry.message.role !== "toolResult" ||
+      entry.message.toolName !== MAIN_TOOL
+    )
+      continue;
+    const candidate: unknown = entry.message.details;
+    if (!isRunDetails(candidate) || !Value.Check(Type.Array(JobReceiptSchema), candidate.jobs))
+      continue;
+    for (const job of candidate.jobs) jobs.set(job.id, job);
+  }
+  return jobs.size === 0 ? undefined : [...jobs.values()];
+};
+
 const resultText = (result: { content: Array<{ type: string; text?: string }> }) => {
   const only = result.content.length === 1 ? result.content[0] : undefined;
   if (only?.type === "text") return only.text ?? "";
@@ -156,7 +216,7 @@ const resultText = (result: { content: Array<{ type: string; text?: string }> })
 };
 
 export const CALLSCRIPT_TOOL_DESCRIPTION =
-  "Execute one bounded, inert JavaScript-shaped plan. Pi calls: read({path,offset?,limit?}) reads text or images; write({path,content}) writes one file; edit({path,edits}) replaces exact text; search({pattern,path?,glob?,ignoreCase?,literal?,context?,limit?}) searches file contents; find({pattern,path?,limit?}) finds paths; list({path?}) lists a directory; run({command,timeout?}) runs a shell command. Extra calls: http({url,method?,headers?,body?,timeoutMs?}) fetches bounded text; wait({milliseconds}) delays without blocking; think({note?}) yields control for a full reasoning turn—rerun the unchanged script to resume; snapshot({paths}) captures files; undo({snapshot}) restores them. Await dependencies, use Promise.all for independent calls, and return only useful results. Un-awaited calls become session jobs that can be joined later.";
+  "Execute one bounded, inert JavaScript-shaped plan over fixed CallScript capabilities. Use owning Pi tools directly for Fabric, FFF, MCP, subagent, and extension work.";
 
 export const CALLSCRIPT_MODE_PROMPT =
   "CallScript is available beside other Pi tools. Use it for bounded programs over its listed fixed capabilities. Use the owning Pi tool directly for Fabric, FFF, MCP, subagent, and other extension operations. Work in short evidence-driven phases: parallelize independent calls and await dependencies. Use think when later calls require judgment: a paused result returns control to you for reasoning; invoke callscript again with the unchanged script to resume from saved results. Use snapshot before changes that may need undo.";
@@ -169,8 +229,10 @@ export const activeToolsForMode = (mode: Mode, currentTools: readonly string[]) 
 };
 
 export default async function callscriptExtension(pi: ExtensionAPI) {
+  const persistJob = (job: JobReceipt) =>
+    pi.appendEntry<PersistedJobReceipt>(JOB_STATE_ENTRY, { version: 1, job });
   let config = await Effect.runPromise(loadConfig(process.cwd()));
-  let runtime = new CallScriptRuntime(process.cwd(), config);
+  let runtime = new CallScriptRuntime(process.cwd(), config, persistJob);
   let mode: Mode = config.mode;
 
   const applyMode = (ctx: ExtensionContext) => {
@@ -181,9 +243,11 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
   const rebuild = (ctx: ExtensionContext, keepState: boolean) =>
     Effect.gen(function* () {
       const state = keepState ? runtime.scope.state : restoredState(ctx);
+      const jobs = keepState ? runtime.jobs() : restoredJobs(ctx);
       const nextConfig = yield* loadConfig(ctx.cwd);
-      const nextRuntime = new CallScriptRuntime(ctx.cwd, nextConfig);
+      const nextRuntime = new CallScriptRuntime(ctx.cwd, nextConfig, persistJob);
       yield* nextRuntime.restore(state);
+      yield* nextRuntime.restoreJobs(jobs);
       yield* runtime.reset();
       config = nextConfig;
       runtime = nextRuntime;
@@ -192,7 +256,7 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: MAIN_TOOL,
     label: "callscript",
-    description: CALLSCRIPT_TOOL_DESCRIPTION,
+    description: `${CALLSCRIPT_TOOL_DESCRIPTION}\n\n${runtime.languageCard()}`,
     parameters: ExecuteSchema,
     executionMode: "sequential",
     async execute(toolCallId, { script }, signal, onUpdate, ctx) {
@@ -236,18 +300,36 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event) => {
     if (mode === "off") return;
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${CALLSCRIPT_MODE_PROMPT}`,
+      systemPrompt: `${event.systemPrompt}\n\n${CALLSCRIPT_MODE_PROMPT}\n\n${runtime.languageCard()}`,
     };
   });
 
   pi.registerCommand("callscript", {
-    description: "Toggle CallScript mode or run on, off, status, reload, reset",
+    description: "CallScript help, doctor, jobs, mode, reload, and reset",
     async handler(args, ctx) {
       const command = args.trim().toLowerCase();
       if (command === "status") {
         ctx.ui.notify(
           `CallScript is ${mode} and additive; ${runtime.tools.length} fixed tools; concurrency ${config.limits.maxConcurrency}.`,
         );
+        return;
+      }
+      if (command === "help") {
+        ctx.ui.notify(
+          "Usage: /callscript [on|off|status|jobs|help|doctor|reload|reset]. CallScript runs fixed bounded capabilities. Use direct Pi tools for Fabric, FFF, MCP, subagent, and extensions.",
+          "info",
+        );
+        return;
+      }
+      if (command === "doctor") {
+        ctx.ui.notify(
+          `CallScript doctor: ready; ${runtime.tools.length} fixed capabilities; output bound ${config.maxOutputBytes ?? 10_240} bytes; HTTP bound ${config.maxHttpResultBytes} bytes.`,
+          "info",
+        );
+        return;
+      }
+      if (command === "jobs") {
+        ctx.ui.notify(runtime.jobsText(), "info");
         return;
       }
       if (command === "reload") {
@@ -265,7 +347,10 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
       if (isMode(nextMode)) {
         mode = nextMode;
       } else {
-        ctx.ui.notify("Usage: /callscript [on|off|status|reload|reset]", "warning");
+        ctx.ui.notify(
+          "Usage: /callscript [on|off|status|jobs|help|doctor|reload|reset]",
+          "warning",
+        );
         return;
       }
       pi.appendEntry<PersistedMode>(STATE_ENTRY, { version: 1, mode });

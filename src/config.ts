@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { Effect, Schema } from "effect";
 
+import { ConfigError } from "./errors.js";
 import { MODES, type ExtensionConfig, type Mode } from "./types.js";
 
 const ModeSchema = Schema.Literals(["off", "on"]);
@@ -19,6 +20,7 @@ const FileConfigSchema = Schema.Struct({
   limits: Schema.optionalKey(LimitsSchema),
   httpTimeoutMs: Schema.optionalKey(Schema.Number),
   maxHttpResultBytes: Schema.optionalKey(Schema.Number),
+  maxOutputBytes: Schema.optionalKey(Schema.Number),
 });
 
 type FileConfig = typeof FileConfigSchema.Type;
@@ -34,32 +36,17 @@ const DEFAULT_CONFIG: ExtensionConfig = {
   },
   httpTimeoutMs: 30_000,
   maxHttpResultBytes: 5_242_880,
+  maxOutputBytes: 10_240,
 };
-
-export class ConfigError extends Error {
-  readonly path: string;
-
-  constructor(path: string, cause: unknown) {
-    super(`Invalid CallScript config at ${path}`, { cause });
-    this.name = "ConfigError";
-    this.path = path;
-  }
-}
 
 const readConfigFile = (path: string) =>
   Effect.tryPromise({
     try: () => readFile(path, "utf8"),
-    catch: (cause) => new ConfigError(path, cause),
+    catch: (cause) => ConfigError.from(path, cause),
   }).pipe(
     Effect.flatMap((text) =>
-      Effect.try({
-        try: () => JSON.parse(text),
-        catch: (cause) => new ConfigError(path, cause),
-      }).pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(FileConfigSchema)),
-        Effect.mapError((cause) =>
-          cause instanceof ConfigError ? cause : new ConfigError(path, cause),
-        ),
+      Schema.decodeUnknownEffect(Schema.fromJsonString(FileConfigSchema))(text).pipe(
+        Effect.mapError((cause) => ConfigError.from(path, cause)),
       ),
     ),
     Effect.catchIf(
@@ -98,6 +85,7 @@ const merge = (base: ExtensionConfig, next: FileConfig | undefined): ExtensionCo
       1_024,
       52_428_800,
     ),
+    maxOutputBytes: integer(next.maxOutputBytes, base.maxOutputBytes ?? 10_240, 1_024, 20_480),
   };
 };
 

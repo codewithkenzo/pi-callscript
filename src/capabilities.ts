@@ -5,9 +5,9 @@ import {
   createGrepToolDefinition,
   createLsToolDefinition,
   createPowerShellToolDefinition,
-  createReadToolDefinition,
   createWriteToolDefinition,
   type AgentToolResult,
+  type EditToolDetails,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -26,6 +26,8 @@ import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
 import { StreamUpdateFailure, ToolInvocationFailure } from "./errors.js";
+import type { ActivityPresentation } from "./presentation.js";
+import { createInvocationReadDefinition } from "./read-capability.js";
 import { SnapshotStore } from "./snapshots.js";
 import type { Activity, ActivityState, ExtensionConfig, Invocation, RunDetails } from "./types.js";
 
@@ -43,14 +45,41 @@ interface ActivityMeta {
 interface OperationResult<T> {
   value: T;
   summary: string;
+  presentation?: ActivityPresentation;
 }
 
 const STREAM_INTERVAL_MS = 50;
+const MAX_PROGRESS_EVENTS = 12;
+const MAX_ACTIVITY_TEXT = 160;
 const elapsedSince = (startedAt: number) => Math.max(0, Math.round(performance.now() - startedAt));
 
 const jsonSchema = (schema: TSchema): JsonSchema => ({ ...schema });
 
+const activityText = (text: string | undefined) => {
+  if (text === undefined || text.length <= MAX_ACTIVITY_TEXT) return text;
+  const head = Math.ceil((MAX_ACTIVITY_TEXT - 1) / 2);
+  const tail = Math.floor((MAX_ACTIVITY_TEXT - 1) / 2);
+  return `${text.slice(0, head)}…${text.slice(-tail)}`;
+};
+
+const activityView = (events: Chunk.Chunk<Activity>, maximum: number) => {
+  const all = Chunk.toArray(events);
+  return all.slice(-maximum).map((event) => {
+    const view: Activity = { ...event };
+    const target = activityText(event.target);
+    const detail = activityText(event.detail);
+    const result = activityText(event.result);
+    const error = activityText(event.error);
+    if (target !== undefined) view.target = target;
+    if (detail !== undefined) view.detail = detail;
+    if (result !== undefined) view.result = result;
+    if (error !== undefined) view.error = error;
+    return view;
+  });
+};
+
 const progressDetails = (active: Invocation, state: ActivityState): RunDetails => {
+  const activity = activityView(state.events, MAX_PROGRESS_EVENTS);
   return {
     version: 1,
     mode: "on",
@@ -58,8 +87,14 @@ const progressDetails = (active: Invocation, state: ActivityState): RunDetails =
     elapsedMs: elapsedSince(active.startedAt),
     calls: state.calls,
     completed: state.completed,
-    active: state.calls - state.completed,
-    activity: Chunk.toArray(state.events),
+    active: state.active,
+    queued: state.queued,
+    done: state.done,
+    failed: state.failed,
+    cancelled: state.cancelled,
+    skipped: state.skipped,
+    activity,
+    activityHidden: state.events.length - activity.length,
   };
 };
 
@@ -89,10 +124,21 @@ const report = (active: Invocation, event: ActivityEvent) =>
         sequence: current.events.length + 1,
         atMs: elapsedSince(active.startedAt),
       };
+      const started = event.phase === "start";
+      const done = event.phase === "done";
+      const cancelled = event.phase === "error" && active.signal?.aborted === true;
+      const failed = event.phase === "error" && !cancelled;
+      const terminal = done || failed || cancelled;
       return {
         events: Chunk.append(current.events, activity),
-        calls: current.calls + (event.phase === "start" ? 1 : 0),
-        completed: current.completed + (event.phase === "done" || event.phase === "error" ? 1 : 0),
+        calls: current.calls + (started ? 1 : 0),
+        completed: current.completed + (terminal ? 1 : 0),
+        queued: Math.max(0, current.queued - (started ? 1 : 0)),
+        active: Math.max(0, current.active + (started ? 1 : 0) - (terminal ? 1 : 0)),
+        done: current.done + (done ? 1 : 0),
+        failed: current.failed + (failed ? 1 : 0),
+        cancelled: current.cancelled + (cancelled ? 1 : 0),
+        skipped: current.skipped,
       };
     });
     if (active.update === undefined) return;
@@ -209,12 +255,27 @@ export const queuePlan = (
         tool: step.call,
         ...plannedMeta(step, config),
         phase: "queued",
+        selection: "selected",
       }));
+    const skipped = script.steps
+      .filter(isCallStep)
+      .filter((step) => !runnable.has(step.id))
+      .map((step): ActivityEvent => ({
+        step: step.id,
+        tool: step.call,
+        ...plannedMeta(step, config),
+        phase: "skipped",
+        selection: "skipped",
+        result: "branch not selected or settled result reused",
+      }));
+    queued.push(...skipped);
     if (queued.length === 0) return;
 
     const now = performance.now();
     const state = yield* Ref.updateAndGet(active.activity, (current) => ({
       ...current,
+      queued: current.queued + queued.length - skipped.length,
+      skipped: current.skipped + skipped.length,
       events: Chunk.appendAll(
         current.events,
         Chunk.fromIterable(
@@ -229,7 +290,12 @@ export const queuePlan = (
     if (active.update === undefined || !(yield* Ref.get(active.streamOpen))) return;
     yield* Ref.set(active.lastUpdateAt, now);
     yield* publishUntilFailure(active, {
-      content: [{ type: "text", text: `${queued.length} queued` }],
+      content: [
+        {
+          type: "text",
+          text: `${queued.length - skipped.length} queued · ${skipped.length} skipped`,
+        },
+      ],
       details: progressDetails(active, state),
     });
   });
@@ -248,15 +314,20 @@ export const closeQueued = (active: Invocation) =>
     );
     if (waiting.length === 0) return current;
     const atMs = elapsedSince(active.startedAt);
+    const cancelled = active.signal?.aborted === true;
     return {
       ...current,
+      queued: Math.max(0, current.queued - waiting.length),
+      cancelled: current.cancelled + (cancelled ? waiting.length : 0),
+      skipped: current.skipped + (cancelled ? 0 : waiting.length),
       events: Chunk.appendAll(
         current.events,
         Chunk.fromIterable(
           waiting.map((event, index): Activity => ({
             ...event,
             phase: "skipped",
-            result: "not launched",
+            selection: "skipped",
+            result: cancelled ? "host abort before launch" : "branch not selected",
             sequence: current.events.length + index + 1,
             atMs,
           })),
@@ -270,7 +341,7 @@ export const pulse = (active: Invocation) =>
     if (active.update === undefined) return;
     const state = yield* Ref.get(active.activity);
     const streamOpen = yield* Ref.get(active.streamOpen);
-    if (!streamOpen || state.calls === state.completed || state.calls === 0) return;
+    if (!streamOpen || state.active === 0) return;
     const current = progressDetails(active, state);
     yield* publishUntilFailure(active, {
       content: [{ type: "text", text: "Running" }],
@@ -295,14 +366,16 @@ const withActivity = <T, E>(
     if (call.itemIndex !== undefined) base.item = call.itemIndex;
     yield* report(active, { ...base, phase: "start" });
     const outcome = yield* operation(active).pipe(
-      Effect.tap((result) =>
-        report(active, {
+      Effect.tap((result) => {
+        const settled: ActivityEvent = {
           ...base,
           phase: "done",
           elapsedMs: elapsedSince(startedAt),
           result: result.summary,
-        }),
-      ),
+        };
+        if (result.presentation !== undefined) settled.presentation = result.presentation;
+        return report(active, settled);
+      }),
       Effect.tapError((cause) =>
         report(active, {
           ...base,
@@ -316,12 +389,13 @@ const withActivity = <T, E>(
   });
 
 const nativeResult = <T>(result: AgentToolResult<T>) => {
-  if (result.content.length === 1 && result.content[0]?.type === "text")
-    return result.content[0].text;
-  return {
-    content: result.content,
-    details: result.details,
-  };
+  const text =
+    result.content.length === 1 && result.content[0]?.type === "text"
+      ? result.content[0].text
+      : undefined;
+  if (result.details === undefined && text !== undefined) return text;
+  if (result.details === undefined) return { content: result.content };
+  return { content: result.content, details: result.details };
 };
 
 const nonemptyLines = (text: string) => {
@@ -362,6 +436,35 @@ const lineSummary = <T>(result: AgentToolResult<T>, noun: string) => {
 
 type DescribeInput<P extends TSchema> = (params: Static<P>) => ActivityMeta;
 type DescribeResult<D> = (result: AgentToolResult<D>) => string;
+type DescribePresentation<D> = (result: AgentToolResult<D>) => ActivityPresentation | undefined;
+
+const editPresentation = (result: AgentToolResult<EditToolDetails | undefined>) => {
+  const details = result.details;
+  if (details === undefined) return undefined;
+  let hunkCount = 0;
+  let addedLines = 0;
+  let removedLines = 0;
+  for (const line of details.diff.split("\n")) {
+    if (line.startsWith("@@")) hunkCount += 1;
+    else if (line.startsWith("+") && !line.startsWith("+++")) addedLines += 1;
+    else if (line.startsWith("-") && !line.startsWith("---")) removedLines += 1;
+  }
+  const counts = { hunkCount, addedLines, removedLines };
+  if (details.firstChangedLine === undefined)
+    return {
+      kind: "edit",
+      diff: details.diff,
+      patch: details.patch,
+      ...counts,
+    } satisfies ActivityPresentation;
+  return {
+    kind: "edit",
+    diff: details.diff,
+    patch: details.patch,
+    firstChangedLine: details.firstChangedLine,
+    ...counts,
+  } satisfies ActivityPresentation;
+};
 
 const adapt = <P extends TSchema, D, S>(
   name: string,
@@ -369,6 +472,8 @@ const adapt = <P extends TSchema, D, S>(
   source: InvocationSource,
   describeInput: DescribeInput<P>,
   describeResult: DescribeResult<D>,
+  describePresentation: DescribePresentation<D> | undefined = undefined,
+  definitionForCwd: ((cwd: string) => ToolDefinition<P, D, S>) | undefined = undefined,
 ) =>
   tool({
     name,
@@ -386,7 +491,7 @@ const adapt = <P extends TSchema, D, S>(
           withActivity(source, call, describeInput(params), (active) =>
             Effect.tryPromise({
               try: () =>
-                definition.execute(
+                (definitionForCwd?.(active.ctx.cwd) ?? definition).execute(
                   `${active.id}:${call.stepId}`,
                   params,
                   active.signal,
@@ -395,10 +500,15 @@ const adapt = <P extends TSchema, D, S>(
                 ),
               catch: (cause) => ToolInvocationFailure.from(name, cause),
             }).pipe(
-              Effect.map((result) => ({
-                value: nativeResult(result),
-                summary: describeResult(result),
-              })),
+              Effect.map((result) => {
+                const operation: OperationResult<ReturnType<typeof nativeResult>> = {
+                  value: nativeResult(result),
+                  summary: describeResult(result),
+                };
+                const presentation = describePresentation?.(result);
+                if (presentation !== undefined) operation.presentation = presentation;
+                return operation;
+              }),
             ),
           ),
         ),
@@ -428,9 +538,30 @@ const HttpSchema = Type.Object(
 );
 
 const WaitSchema = Type.Object(
-  { milliseconds: Type.Number({ minimum: 0 }) },
+  { milliseconds: Type.Integer({ minimum: 0, maximum: 600_000 }) },
   { additionalProperties: false },
 );
+
+const ToolsSchema = Type.Object(
+  { query: Type.Optional(Type.String({ maxLength: 100 })) },
+  { additionalProperties: false },
+);
+
+const FIXED_CAPABILITY_NAMES = [
+  "read",
+  "write",
+  "edit",
+  "search",
+  "find",
+  "list",
+  "run",
+  "http",
+  "wait",
+  "think",
+  "snapshot",
+  "undo",
+  "tools",
+] as const;
 
 const ThinkSchema = Type.Object(
   { note: Type.Optional(Type.String({ maxLength: 500 })) },
@@ -532,10 +663,12 @@ export const createCapabilities = (
   return [
     adapt(
       "read",
-      createReadToolDefinition(cwd),
+      createInvocationReadDefinition(cwd),
       source,
       (args) => ({ target: args.path }),
       (result) => lineSummary(result, "line"),
+      undefined,
+      createInvocationReadDefinition,
     ),
     adapt(
       "write",
@@ -549,6 +682,8 @@ export const createCapabilities = (
         };
       },
       () => "written",
+      undefined,
+      createWriteToolDefinition,
     ),
     adapt(
       "edit",
@@ -559,6 +694,8 @@ export const createCapabilities = (
         detail: `${args.edits.length} ${args.edits.length === 1 ? "change" : "changes"}`,
       }),
       () => "applied",
+      editPresentation,
+      createEditToolDefinition,
     ),
     adapt(
       "search",
@@ -566,6 +703,8 @@ export const createCapabilities = (
       source,
       (args) => ({ target: args.path ?? ".", detail: args.pattern }),
       (result) => lineSummary(result, "match"),
+      undefined,
+      createGrepToolDefinition,
     ),
     adapt(
       "find",
@@ -573,6 +712,8 @@ export const createCapabilities = (
       source,
       (args) => ({ target: args.path ?? ".", detail: args.pattern }),
       (result) => lineSummary(result, "path"),
+      undefined,
+      createFindToolDefinition,
     ),
     adapt(
       "list",
@@ -580,6 +721,8 @@ export const createCapabilities = (
       source,
       (args) => ({ target: args.path ?? "." }),
       (result) => lineSummary(result, "entry"),
+      undefined,
+      createLsToolDefinition,
     ),
     adapt(
       "run",
@@ -595,6 +738,8 @@ export const createCapabilities = (
         if (lines === 0) return "finished";
         return `finished · ${lines} output ${lines === 1 ? "line" : "lines"}`;
       },
+      undefined,
+      process.platform === "win32" ? createPowerShellToolDefinition : createBashToolDefinition,
     ),
     tool({
       name: "http",
@@ -640,6 +785,33 @@ export const createCapabilities = (
                 ),
             );
           }),
+        );
+        return Effect.runPromise(program);
+      },
+    }),
+    tool({
+      name: "tools",
+      description:
+        "Inspect names of fixed CallScript capabilities. This does not discover Pi tools.",
+      inputSchema: jsonSchema(ToolsSchema),
+      execute(raw: Static<typeof ToolsSchema>, call) {
+        const program = Effect.try({
+          try: () => Value.Parse(ToolsSchema, raw),
+          catch: (cause) => ToolInvocationFailure.from("tools", cause),
+        }).pipe(
+          Effect.flatMap((args) =>
+            withActivity(source, call, { target: args.query ?? "all fixed capabilities" }, () => {
+              const query = args.query?.toLowerCase();
+              const names =
+                query === undefined
+                  ? [...FIXED_CAPABILITY_NAMES]
+                  : FIXED_CAPABILITY_NAMES.filter((name) => name.includes(query));
+              return Effect.succeed({
+                value: { fixed: true, names },
+                summary: `${names.length} fixed capabilities`,
+              });
+            }),
+          ),
         );
         return Effect.runPromise(program);
       },
