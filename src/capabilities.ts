@@ -25,7 +25,7 @@ import { Chunk, Effect, Ref } from "effect";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
-import { ToolInvocationFailure } from "./errors.js";
+import { StreamUpdateFailure, ToolInvocationFailure } from "./errors.js";
 import { SnapshotStore } from "./snapshots.js";
 import type { Activity, ActivityState, ExtensionConfig, Invocation, RunDetails } from "./types.js";
 
@@ -68,12 +68,17 @@ const publish = (active: Invocation, update: Parameters<NonNullable<Invocation["
   if (send === undefined) return Effect.void;
   return Effect.try({
     try: () => send(update),
-    catch: () => undefined,
-  }).pipe(
-    Effect.catch(() => Ref.set(active.streamOpen, false)),
-    Effect.asVoid,
-  );
+    catch: StreamUpdateFailure.from,
+  }).pipe(Effect.asVoid);
 };
+
+const publishUntilFailure = (
+  active: Invocation,
+  update: Parameters<NonNullable<Invocation["update"]>>[0],
+) =>
+  publish(active, update).pipe(
+    Effect.catchTag("StreamUpdateFailure", () => Ref.set(active.streamOpen, false)),
+  );
 
 const report = (active: Invocation, event: ActivityEvent) =>
   Effect.gen(function* () {
@@ -101,7 +106,7 @@ const report = (active: Invocation, event: ActivityEvent) =>
 
     yield* Ref.set(active.lastUpdateAt, now);
     const current = progressDetails(active, state);
-    yield* publish(active, {
+    yield* publishUntilFailure(active, {
       content: [
         {
           type: "text",
@@ -223,7 +228,7 @@ export const queuePlan = (
     }));
     if (active.update === undefined || !(yield* Ref.get(active.streamOpen))) return;
     yield* Ref.set(active.lastUpdateAt, now);
-    yield* publish(active, {
+    yield* publishUntilFailure(active, {
       content: [{ type: "text", text: `${queued.length} queued` }],
       details: progressDetails(active, state),
     });
@@ -267,7 +272,7 @@ export const pulse = (active: Invocation) =>
     const streamOpen = yield* Ref.get(active.streamOpen);
     if (!streamOpen || state.calls === state.completed || state.calls === 0) return;
     const current = progressDetails(active, state);
-    yield* publish(active, {
+    yield* publishUntilFailure(active, {
       content: [{ type: "text", text: "Running" }],
       details: current,
     });

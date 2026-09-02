@@ -241,13 +241,15 @@ return point;
     expect(updates.some((update) => update.active === 1 && update.elapsedMs >= 900)).toBe(true);
   });
 
-  test("keeps executing when Pi rejects a progress update", async () => {
+  test("closes progress publishing after Pi rejects an update", async () => {
     const cwd = await workspace();
     const runtime = new CallScriptRuntime(cwd, config);
+    let updateAttempts = 0;
     const result = await Effect.runPromise(
       runtime.execute(
         "return await wait({ milliseconds: 0 });",
         invocation(cwd, () => {
+          updateAttempts += 1;
           throw new Error("closed tool row");
         }),
       ),
@@ -255,6 +257,7 @@ return point;
 
     expect(result.isError, result.text).toBe(false);
     expect(result.details.activity.at(-1)?.phase).toBe("done");
+    expect(updateAttempts).toBe(1);
   });
 
   test("publishes prior results into the next script", async () => {
