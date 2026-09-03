@@ -59,8 +59,8 @@ CallScript additions:
 - `http({ url, method?, headers?, body?, timeoutMs? })` fetches bounded response text.
 - `wait({ milliseconds })` delays asynchronously.
 - `think({ note? })` returns control for a full model reasoning turn.
-- `snapshot({ paths })` captures exact file contents and remembers missing files.
-- `undo({ snapshot })` restores a session-local snapshot.
+- `snapshot({ paths })` captures exact file contents and remembers missing files. It returns a receipt object: `{ id, files, bytes }`.
+- `undo({ snapshot: point.id })` restores a session-local snapshot by ID. Pass the receipt’s `id` string, never the full receipt object.
 - `tools({ query? })` inspects fixed CallScript capability names only.
 
 Keep reads narrow with `offset` and `limit`, cap searches, and give commands a realistic timeout in seconds.
@@ -164,14 +164,26 @@ Use `/callscript jobs` to inspect stable ID, human label, `running`, `done`, `fa
 
 ## Make risky work recoverable
 
-Snapshot the exact mutation set before editing. If a later validation step fails, use the published snapshot id in a follow-up script:
+Snapshot the exact mutation set before editing. `snapshot()` returns an object. Keep that receipt or publish `point.id`. `undo()` accepts the ID string only.
+
+```js
+const point = await snapshot({ paths: ["src/generated.ts"] });
+const created = await write({ path: "src/generated.ts", content: "alpha\n" });
+const changed = await edit({
+  path: "src/generated.ts",
+  edits: [{ oldText: "alpha", newText: "beta" }],
+});
+return { snapshotId: point.id, created, changed };
+```
+
+If later validation fails, restore in a follow-up script:
 
 ```js
 const restored = await undo({ snapshot: point.id });
 return { restored };
 ```
 
-Snapshots are session-local. Capture every file the workflow may change, including files that do not exist yet.
+Do not call `undo({ snapshot: point })`; the whole receipt is not a snapshot ID. Snapshots are session-local. Capture every file the workflow may change, including files that do not exist yet.
 
 ## Protect context and prompt-cache efficiency
 
