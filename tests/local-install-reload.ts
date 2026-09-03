@@ -114,7 +114,7 @@ async function installPacked(agentDir: string, tarball: string): Promise<void> {
   });
   await writeFile(
     join(agentDir, "settings.json"),
-    JSON.stringify({ packages: ["npm:pi-callscript@0.1.3"] }),
+    JSON.stringify({ packages: ["npm:pi-callscript@0.2.0"] }),
   );
 }
 
@@ -158,7 +158,15 @@ async function copyUserExtensions(agentDir: string): Promise<void> {
   const settings: { packages?: string[] } = JSON.parse(
     await readFile(join(real, "settings.json"), "utf8"),
   );
-  const localPackages = (settings.packages ?? [])
+  const userPackages = (settings.packages ?? []).filter(
+    (packageSource) =>
+      packageSource !== root &&
+      !packageSource.endsWith("/pi-callscript") &&
+      packageSource !== "npm:pi-callscript" &&
+      !packageSource.startsWith("npm:pi-callscript@") &&
+      !packageSource.includes("github.com/codewithkenzo/pi-callscript"),
+  );
+  const localPackages = userPackages
     .filter((packageSource) => packageSource.startsWith(".") || packageSource.startsWith("/"))
     .map((packageSource) => resolve(real, packageSource));
   const copySources = [
@@ -167,7 +175,7 @@ async function copyUserExtensions(agentDir: string): Promise<void> {
   ];
   await assertSafeCopySources(copySources);
   const copiedPackages: string[] = [];
-  for (const [index, packageSource] of (settings.packages ?? []).entries()) {
+  for (const [index, packageSource] of userPackages.entries()) {
     if (!packageSource.startsWith(".") && !packageSource.startsWith("/")) {
       copiedPackages.push(packageSource);
       continue;
