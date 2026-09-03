@@ -194,16 +194,15 @@ const projectedOperations = (source: string): readonly ProjectedOperation[] => {
 
 const projectedTree = (operations: readonly ProjectedOperation[], theme: Palette) => {
   const visible = operations.slice(0, 12);
-  const lines = visible.map((operation, index) => {
-    const branch =
-      index === visible.length - 1 && operations.length <= visible.length ? "└─" : "├─";
-    return `${theme.fg("dim", branch)} ${theme.bold(ACTION_LABELS.get(operation.tool) ?? operation.tool)}  ${theme.fg("accent", shortText(operation.target, 72))}`;
+  const lines = visible.map((operation) => {
+    const run = operation.tool === "run" ? "$ " : "";
+    return `${theme.fg("dim", "›")} ${run}${theme.bold(ACTION_LABELS.get(operation.tool) ?? operation.tool)}  ${theme.fg("accent", shortText(operation.target, 72))}`;
   });
   if (operations.length > visible.length)
     lines.push(
-      `${theme.fg("dim", "└─")} ${theme.fg("dim", `… ${operations.length - visible.length} more operations`)}`,
+      `${theme.fg("dim", "›")} ${theme.fg("dim", `… ${operations.length - visible.length} more operations`)}`,
     );
-  lines.push(`${theme.fg("dim", "└─")} ${theme.fg("dim", "… receiving next operation")}`);
+  lines.push(`${theme.fg("dim", "›")} ${theme.fg("dim", "… receiving next operation")}`);
   return lines;
 };
 
@@ -500,9 +499,7 @@ const traceLines = (
   theme: Palette,
 ) => {
   const lines: string[] = [];
-  for (const [index, trace] of traces.entries()) {
-    const last = index === traces.length - 1;
-    const branch = theme.fg("dim", last ? "└─" : "├─");
+  for (const trace of traces) {
     const lead = trace.start ?? trace.queued ?? trace.end;
     if (lead === undefined || (!expanded && (trace.end?.selection ?? lead.selection) === "skipped"))
       continue;
@@ -512,10 +509,9 @@ const traceLines = (
     const cancelled = isCancelled(end);
     const failed = end?.phase === "error" && !cancelled;
     const skipped = end?.phase === "skipped";
-    const icon = queued
-      ? theme.fg("dim", "○")
-      : active
-        ? theme.fg("warning", "●")
+    const icon =
+      queued || active
+        ? theme.fg(active ? "warning" : "dim", "›")
         : cancelled
           ? theme.fg("warning", "!")
           : failed
@@ -524,46 +520,46 @@ const traceLines = (
               ? theme.fg("dim", "–")
               : theme.fg("success", "✓");
     const tool = ACTION_LABELS.get(lead.tool) ?? humanKey(lead.tool);
+    const run = lead.tool === "run" ? "$ " : "";
     const target = shortText(lead.target ?? humanKey(lead.step));
     const item = lead.item === undefined ? "" : ` · item ${lead.item + 1}`;
-    lines.push(`${branch} ${icon} ${theme.bold(tool)}  ${theme.fg("accent", target)}${item}`);
-
-    const child = theme.fg("dim", last ? "   └─" : "│  └─");
-    const detail = lead.detail === undefined ? "" : `${shortText(lead.detail, 48)} · `;
-    if (queued) {
-      lines.push(`${child} ${theme.fg("dim", `${detail}ready`)}`);
-    } else if (active) {
-      lines.push(`${child} ${theme.fg("warning", `${detail}${activeSummary(trace, elapsedMs)}`)}`);
-    } else if (cancelled) {
-      const reason = shortText(end?.error ?? "host abort", 88);
-      lines.push(`${child} ${theme.fg("warning", `${detail}cancelled · ${reason}`)}`);
+    const detail = lead.detail === undefined ? "" : shortText(lead.detail, 48);
+    let summary = "";
+    let timing = queued
+      ? "ready"
+      : active
+        ? activeSummary(trace, elapsedMs)
+        : duration(end?.elapsedMs ?? 0);
+    if (cancelled) {
+      timing += ` · cancelled: ${shortText(end?.error ?? "host abort", 72)}`;
     } else if (failed) {
-      const reason = shortText(end?.error ?? "failed", 88);
-      lines.push(
-        `${child} ${theme.fg("error", `${detail}failed · ${reason}`)}${theme.fg("dim", ` · ${duration(end?.elapsedMs ?? 0)}`)}`,
-      );
-    } else if (end?.phase === "skipped") {
-      lines.push(`${child} ${theme.fg("dim", `${detail}${end.result ?? "not launched"}`)}`);
+      timing += ` · ${shortText(end?.error ?? "failed", 72)}`;
+    } else if (skipped) {
+      summary = end?.result ?? "not launched";
     } else if (end !== undefined) {
       const presentation = end.presentation;
-      const result =
+      summary =
         presentation === undefined
-          ? (end.result ?? "done")
-          : (editSummary(presentation) ?? end.result ?? "done");
-      lines.push(
-        `${child} ${theme.fg("muted", `${detail}${result}`)}${theme.fg("dim", ` · ${duration(end.elapsedMs ?? 0)}`)}`,
-      );
-      if (presentation?.kind === "edit") {
-        const bounded = editDiffLines(presentation, expanded);
-        if (bounded !== undefined) {
-          const hidden =
-            bounded.hiddenHunks > 0
-              ? `… ${bounded.hiddenHunks} ${bounded.hiddenHunks === 1 ? "hunk" : "hunks"} hidden · ${bounded.hiddenLines} lines hidden`
-              : "diff";
-          lines.push(`${child} ${theme.fg("dim", hidden)}`);
-          if (bounded.rendered.length > 0)
-            lines.push(...bounded.rendered.split("\n").map((line) => `${child} ${line}`));
-        }
+          ? (end.result ?? "")
+          : (editSummary(presentation) ?? end.result ?? "");
+    }
+    const suffix = [timing, summary, detail].filter(Boolean).join(" · ");
+    lines.push(
+      `${icon} ${run}${theme.bold(tool)}  ${theme.fg("accent", target)}${item}${theme.fg("dim", ` · ${suffix}`)}`,
+    );
+
+    if (end?.presentation?.kind === "edit") {
+      const bounded = editDiffLines(end.presentation, expanded);
+      if (bounded !== undefined) {
+        if (bounded.hiddenHunks > 0)
+          lines.push(
+            theme.fg(
+              "dim",
+              `  … ${bounded.hiddenHunks} ${bounded.hiddenHunks === 1 ? "hunk" : "hunks"} hidden · ${bounded.hiddenLines} lines hidden`,
+            ),
+          );
+        if (bounded.rendered.length > 0)
+          lines.push(...bounded.rendered.split("\n").map((line) => `  ${line}`));
       }
     }
   }
@@ -605,7 +601,18 @@ export const renderScriptResult = (
         ? theme.fg("error", "× Failed")
         : theme.fg("success", "✓ Done");
     const output = partial ? [] : outputLines(text, expanded, theme);
-    return new Text([label, ...output].join("\n"), 0, 0);
+    if (output.length === 0) return new Text(label, 0, 0);
+    if (expanded)
+      return new Text(
+        [label, theme.fg("dim", "Output"), ...output.map((line) => `  ${line}`)].join("\n"),
+        0,
+        0,
+      );
+    return new Text(
+      [label, `${theme.fg("dim", "Output")} · ${output.join(" · ")}`].join("\n"),
+      0,
+      0,
+    );
   }
   if (details.status === "invalid") {
     const compact = text.replace(/\s+/g, " ").trim();
@@ -620,11 +627,8 @@ export const renderScriptResult = (
         .replace(/\s*(?:Use|Try):\s*.*$/i, "")
         .replace(/\s*\bline\s+\d+(?:[, ]+column\s+\d+)?/i, "")
         .trim() || "source is not valid";
-    const lines = [
-      theme.fg("error", "× Invalid source"),
-      `${theme.fg("dim", "└─")} ${reason}${where}`,
-    ];
-    lines.push(`${theme.fg("dim", "   Use:")} ${correction ?? 'await read({ path: "file" })'}`);
+    const lines = [theme.fg("error", "× Invalid source"), `  ${reason}${where}`];
+    lines.push(`  ${theme.fg("dim", "Use:")} ${correction ?? 'await read({ path: "file" })'}`);
     return new Text(lines.join("\n"), 0, 0);
   }
 
@@ -647,7 +651,6 @@ export const renderScriptResult = (
     countLabel(counts.failed, "failed"),
     countLabel(counts.cancelled, "cancelled"),
     countLabel(counts.skipped, "not run"),
-    duration(details.elapsedMs),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -655,6 +658,7 @@ export const renderScriptResult = (
   lines.push(...traceLines(traces, details.elapsedMs, expanded, theme));
   if (expanded && (details.activityHidden ?? 0) > 0)
     lines.push(theme.fg("dim", `… ${details.activityHidden} activities hidden`));
+  lines.push(theme.fg("dim", `Timing · ${duration(details.elapsedMs)}`));
 
   if (!partial && details.status !== "paused") {
     const normalized = text.replace(/\s+/g, " ").trim();
@@ -669,8 +673,8 @@ export const renderScriptResult = (
       normalized.length > 0 && normalized !== "done" && normalized !== "Running" && !repeated;
     const output = meaningful ? outputLines(text, expanded, theme, details.presentation) : [];
     if (output.length > 0) {
-      lines.push("", theme.fg("dim", "Result"));
-      lines.push(...output.map((line) => `${theme.fg("dim", "└─")} ${line}`));
+      lines.push("", theme.fg("dim", "Output"));
+      lines.push(...output.map((line) => `  ${line}`));
     }
   }
   return new Text(lines.join("\n"), 0, 0);

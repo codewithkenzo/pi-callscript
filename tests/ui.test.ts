@@ -106,15 +106,18 @@ describe("CallScript UI", () => {
       renderScriptResult(output, runDetails(activity), false, false, false, theme),
     );
 
-    expect(compact).toContain("1 done · 1.4 s");
-    expect(compact).toContain("└─ ✓ Read  package.json");
-    expect(compact).toContain("└─ 42 lines · 4 ms");
-    expect(compact).toContain("Result");
+    expect(compact).toContain("1 done");
+    expect(compact).toContain("Timing · 1.4 s");
+    expect(compact).toContain("✓ Read  package.json · 4 ms · 42 lines");
+    expect(compact).toContain("Output");
     expect(compact).toContain("loaded ✓");
     expect(compact).toContain("preview —");
     expect(compact).toContain("HTTP status 200");
     expect(compact).not.toContain("{");
     expect(compact).not.toContain('"loaded"');
+    expect(compact).not.toContain("├─");
+    expect(compact).not.toContain("└─");
+    expect(compact.match(/Output/g)?.length).toBe(1);
   });
 
   test("accepts Pi-enriched details without mislabeling a successful run", () => {
@@ -168,6 +171,20 @@ describe("CallScript UI", () => {
     expect(compact).not.toContain("Failed");
   });
 
+  test("keeps expanded fallback output on separate lines", () => {
+    const expanded = render(
+      renderScriptResult("line one\nline two", undefined, true, false, false, theme),
+    );
+
+    expect(expanded.split("\n").map((line) => line.trimEnd())).toEqual([
+      "✓ Done",
+      "Output",
+      "  line one",
+      "  line two",
+    ]);
+    expect(expanded).not.toContain("line one · line two");
+  });
+
   test("identifies the active blocker, elapsed age, and timeout", () => {
     const activity: Activity[] = [
       {
@@ -202,8 +219,9 @@ describe("CallScript UI", () => {
       renderScriptResult("Running", runDetails(activity, 12_200), false, true, false, theme),
     );
 
-    expect(running).toContain("1 done · 1 running · 12.2 s");
-    expect(running).toContain("└─ ● Run  bun test");
+    expect(running).toContain("1 done · 1 running");
+    expect(running).toContain("Timing · 12.2 s");
+    expect(running).toContain("› $ Run  bun test · running 12.0 s · timeout 2m 0s");
     expect(running).toContain("running 12.0 s · timeout 2m 0s");
   });
 
@@ -288,8 +306,8 @@ describe("CallScript UI", () => {
     expect(compact).toContain("1 done · 1 running · 1 ready · 1 failed");
     expect(compact).toContain("✓ Read  a.txt");
     expect(compact).toContain("× Read  b.txt");
-    expect(compact).toContain("● Run  bun test");
-    expect(compact).toContain("○ Edit  result.ts");
+    expect(compact).toContain("› $ Run  bun test");
+    expect(compact).toContain("› Edit  result.ts");
     expect(compact).not.toContain("not launched");
   });
 
@@ -344,7 +362,7 @@ describe("CallScript UI", () => {
 
     expect(compact).toContain("thinking · 1 done · 1 ready");
     expect(compact).toContain("✓ Think  choose the next edit");
-    expect(compact).toContain("○ Edit  src/index.ts");
+    expect(compact).toContain("› Edit  src/index.ts");
     expect(compact).not.toContain("$callscript");
   });
 
@@ -404,6 +422,7 @@ describe("CallScript UI", () => {
     expect(output).toContain("Use:");
     expect(output).not.toContain("planned");
     expect(output).not.toContain("Result");
+    expect(output).not.toContain("└─");
   });
 
   test("shows cancellation as distinct state with explicit plural labels", () => {
@@ -433,7 +452,84 @@ describe("CallScript UI", () => {
 
     expect(output).toContain("1 cancelled");
     expect(output).toContain("cancelled");
+    expect(output).toContain("! Wait  1000 ms · 5 ms · cancelled: Wait aborted");
     expect(output).not.toContain("1 failed");
+  });
+
+  test("renders write, read, and undo as one compact operation row each", () => {
+    const activity: Activity[] = [
+      { sequence: 1, atMs: 0, step: "write", tool: "write", phase: "start", target: "draft.txt" },
+      {
+        sequence: 2,
+        atMs: 2,
+        step: "write",
+        tool: "write",
+        phase: "done",
+        target: "draft.txt",
+        result: "2 lines",
+        elapsedMs: 2,
+      },
+      { sequence: 3, atMs: 3, step: "read", tool: "read", phase: "start", target: "draft.txt" },
+      {
+        sequence: 4,
+        atMs: 5,
+        step: "read",
+        tool: "read",
+        phase: "done",
+        target: "draft.txt",
+        result: "2 lines",
+        elapsedMs: 2,
+      },
+      { sequence: 5, atMs: 6, step: "undo", tool: "undo", phase: "start", target: "snap-1" },
+      {
+        sequence: 6,
+        atMs: 9,
+        step: "undo",
+        tool: "undo",
+        phase: "done",
+        target: "snap-1",
+        result: "restored",
+        elapsedMs: 3,
+      },
+    ];
+    const output = render(
+      renderScriptResult(
+        "done",
+        { ...runDetails(activity, 9), calls: 3, completed: 3 },
+        false,
+        false,
+        false,
+        theme,
+      ),
+    );
+    expect(output).toContain("✓ Write  draft.txt · 2 ms · 2 lines");
+    expect(output).toContain("✓ Read  draft.txt · 2 ms · 2 lines");
+    expect(output).toContain("✓ Undo  snap-1 · 3 ms · restored");
+    expect(output.match(/Timing · 9 ms/g)?.length).toBe(1);
+  });
+
+  test("bounds compact operation rows at narrow width", () => {
+    const activity: Activity[] = [
+      {
+        sequence: 1,
+        atMs: 0,
+        step: "run",
+        tool: "run",
+        phase: "start",
+        target: "bun test --long-target-name",
+      },
+    ];
+    const component = renderScriptResult(
+      "Running",
+      { ...runDetails(activity, 120), active: 1 },
+      false,
+      true,
+      false,
+      theme,
+    );
+    const rows = component.render(32);
+    expect(rows.every((row) => row.length <= 32)).toBe(true);
+    expect(rows.join("\n")).toContain("› $ Run");
   });
 
   test("renders native edit diff with bounded hunk totals", () => {
