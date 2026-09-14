@@ -3,7 +3,8 @@ import { ScriptValidationError, type ScriptEngine } from "callscript";
 const REPLACEMENTS = {
   CS001: 'const result = await read({ path: "file.txt" }); return result;',
   CS002: 'const matches = await search({ pattern: "TODO", path: "src" }); return matches;',
-  CS003: "Use owning Pi tool directly for Fabric, FFF, MCP, subagent, or extension work.",
+  CS003:
+    'Inspect with tools({ query: "name" }), then call pi({ tool: "exact_name", args: { ... } }).',
   CS004: 'const result = await read({ path: "file.txt", offset: 1, limit: 200 }); return result;',
   CS005:
     "Use either read({ path, tail }) or read({ path, offset, limit }), not both tail and offset.",
@@ -48,10 +49,11 @@ export const recoveryMessage = (code: "CS006" | "CS007", message: string) =>
   `${code}: ${message}\nRecovery: ${REPLACEMENTS[code]}`;
 
 const EXTRA_LANGUAGE = `
-Supported forms: top-level const declarations; direct await; static Promise.all; bounded slice(...).map(...) fan-out; data dependencies; if guards; try/catch recovery; unchanged-script think resume.
+Supported forms: top-level const declarations; direct await; static Promise.all; bounded slice(...).map(...) fan-out; data dependencies; if guards; try/catch recovery; explicit think decisions.
+At think, choose { decision: "continue" }, { decision: "continue", count: N }, { decision: "stop" }, or { decision: "replace", script, fromScratch? }. A pending checkpoint rejects a new initial script.
 Unsupported forms: tagged templates; wrapper callbacks; computed callback bodies; regex literals; per-call .catch.
 Detached calls return stable job IDs. Join a later run with await <job binding>. Mutating work is never retried unless repeat-safe.
-Routing: use owning Pi tools directly for Fabric, FFF, MCP, subagent, and extension work. CallScript tools inspect only its fixed capabilities.`;
+Pi tools: inspect with tools({ query? }); invoke with pi({ tool: "exact_name", args: { ... } }). callscript recursion is blocked. Pi calls serialize and are never repeat-safe.`;
 
 export const languageCard = (engine: Pick<ScriptEngine<readonly never[]>, "describe">) =>
   `${engine.describe().trim()}\n\n${EXTRA_LANGUAGE.trim()}`;

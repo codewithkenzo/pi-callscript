@@ -23,6 +23,7 @@ import { closeQueued, createCapabilities, pulse, queuePlan } from "./capabilitie
 import { validateCapabilityBoundaries } from "./boundaries.js";
 import { OutputBoundsFailure, RuntimeDefect, SourceValidationFailure } from "./errors.js";
 import { languageCard, recoveryMessage } from "./language.js";
+import type { PiToolProvider } from "./pi-tool-bridge.js";
 import {
   presentationDetails,
   presentationText,
@@ -32,6 +33,8 @@ import {
 import { SnapshotStore } from "./snapshots.js";
 import type {
   Activity,
+  CheckpointDecision,
+  CheckpointDetails,
   ExtensionConfig,
   Invocation,
   InvocationInput,
@@ -45,7 +48,24 @@ export interface ExecutionResult {
   isError: boolean;
 }
 
-type RunOutcome = { kind: "run"; result: ExecuteResult } | { kind: "session"; result: StartResult };
+type RunOutcome =
+  | { kind: "run"; result: ExecuteResult; plan: Script }
+  | { kind: "session"; result: StartResult; plan: Script };
+
+interface PendingCheckpoint {
+  readonly plan: Script;
+  readonly at: string;
+  readonly note: string;
+  readonly direct?: boolean;
+}
+
+interface RunControl {
+  readonly retain?: PendingCheckpoint;
+  readonly advanced?: readonly string[];
+  readonly forceDirect?: boolean;
+}
+
+const isSourceText = Schema.is(Schema.String);
 
 const elapsedSince = (startedAt: number) => Math.max(0, Math.round(performance.now() - startedAt));
 
@@ -309,6 +329,7 @@ export class CallScriptRuntime {
   #session: SessionRunner;
   readonly #backgroundAbort = new Map<string, AbortController>();
   readonly #jobs = new Map<string, JobReceipt>();
+  #checkpoint: PendingCheckpoint | undefined;
   #unsubscribeSession: () => void = () => undefined;
   readonly #activeControllers = new Set<AbortController>();
   readonly #invocations = new AsyncLocalStorage<Invocation>();
@@ -317,11 +338,12 @@ export class CallScriptRuntime {
     cwd: string,
     config: ExtensionConfig,
     onJobSettled: (job: JobReceipt) => void = () => undefined,
+    piTools?: PiToolProvider,
   ) {
     this.#config = config;
     this.#onJobSettled = onJobSettled;
     this.#snapshots = new SnapshotStore(cwd);
-    this.tools = createCapabilities(cwd, config, () => this.invocation(), this.#snapshots);
+    this.tools = createCapabilities(cwd, config, () => this.invocation(), this.#snapshots, piTools);
     this.engine = scriptEngine({
       tools: this.tools,
       format: "js",
@@ -412,8 +434,24 @@ export class CallScriptRuntime {
 
   restore(state: RunState | undefined) {
     return Effect.sync(() => {
-      if (state === undefined) delete this.scope.state;
-      else this.scope.state = state;
+      if (state === undefined) {
+        delete this.scope.state;
+        this.#checkpoint = undefined;
+        return;
+      }
+      this.scope.state = state;
+      const at = state.at;
+      const output = at === undefined ? undefined : state.steps[at]?.output;
+      if (state.status !== "returned" || at === undefined || !isThinkingCheckpoint(output)) {
+        this.#checkpoint = undefined;
+        return;
+      }
+      const direct = state.script.steps.some(
+        (step) => isCallStep(step) && step.await === false && !isAwaitCall(step.call),
+      );
+      this.#checkpoint = direct
+        ? { plan: state.script, at, note: output.note, direct: true }
+        : { plan: state.script, at, note: output.note };
     });
   }
 
@@ -461,6 +499,7 @@ export class CallScriptRuntime {
         this.#backgroundAbort.clear();
         this.#jobs.clear();
         delete this.scope.state;
+        this.#checkpoint = undefined;
         this.scope.memo.clear();
         this.#session = this.createSession();
       });
@@ -468,7 +507,141 @@ export class CallScriptRuntime {
     });
   }
 
+  private checkpointDetails(checkpoint: PendingCheckpoint): CheckpointDetails {
+    const runnable = new Set(
+      this.engine
+        .plan(checkpoint.plan, this.scope.state)
+        .filter((step) => step.action === "run" && step.tool !== undefined)
+        .map((step) => step.id),
+    );
+    const checkpointIndex = checkpoint.plan.steps.findIndex((step) => step.id === checkpoint.at);
+    const queued = checkpoint.plan.steps
+      .slice(checkpointIndex + 1)
+      .filter(isCallStep)
+      .filter((step) => runnable.has(step.id))
+      .map((step) => ({ step: step.id, tool: step.call }));
+    return { at: checkpoint.at, note: checkpoint.note, queued };
+  }
+
+  private decisionPrompt(checkpoint: PendingCheckpoint) {
+    const queued = this.checkpointDetails(checkpoint).queued;
+    const queueText =
+      queued.length === 0
+        ? "No queued call steps remain."
+        : `Queued call steps: ${queued.map((entry) => `${entry.step} (${entry.tool})`).join(", ")}.`;
+    return `Decision required. ${queueText}\nChoose one CallScript input: { decision: "continue" }, { decision: "continue", count: N }, { decision: "stop" }, or { decision: "replace", script, fromScratch? }.`;
+  }
+
+  private decisionResult(
+    text: string,
+    status: RunDetails["status"],
+    isError: boolean,
+    checkpoint?: PendingCheckpoint,
+  ) {
+    const details: RunDetails = {
+      version: 1,
+      mode: "on",
+      status,
+      elapsedMs: 0,
+      calls: 0,
+      completed: 0,
+      active: 0,
+      queued: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+      skipped: 0,
+      activity: [],
+    };
+    if (this.scope.state !== undefined) {
+      const stateBytes = Buffer.byteLength(stableStringify(this.scope.state), "utf8");
+      if (stateBytes <= MAX_RETAINED_STATE_BYTES) details.state = this.scope.state;
+      else details.retainedState = { omittedBytes: stateBytes };
+    }
+    if (checkpoint !== undefined) details.checkpoint = this.checkpointDetails(checkpoint);
+    return Effect.succeed({ text, details, isError } satisfies ExecutionResult);
+  }
+
   execute(script: string, input: InvocationInput) {
+    if (this.#checkpoint !== undefined)
+      return this.decisionResult(
+        `Checkpoint decision required. A new initial script cannot run while checkpoint is pending.\n${this.decisionPrompt(this.#checkpoint)}`,
+        "paused",
+        true,
+        this.#checkpoint,
+      );
+    return this.run(script, input);
+  }
+
+  decide(decision: CheckpointDecision, input: InvocationInput) {
+    const checkpoint = this.#checkpoint;
+    if (checkpoint === undefined)
+      return this.decisionResult("No pending checkpoint.", "error", true);
+
+    if (decision.action === "stop") {
+      this.#checkpoint = undefined;
+      if (this.scope.state !== undefined) {
+        this.scope.state.status = "done";
+        delete this.scope.state.at;
+      }
+      return this.decisionResult(
+        "Checkpoint stopped. Remaining queued calls were discarded.",
+        "ok",
+        false,
+      );
+    }
+
+    if (decision.action === "replace") {
+      this.#checkpoint = undefined;
+      if (decision.fromScratch === true) {
+        delete this.scope.state;
+        this.scope.memo.clear();
+        this.#unsubscribeSession();
+        this.#session = this.createSession();
+      }
+      return this.run(decision.script, input);
+    }
+
+    const details = this.checkpointDetails(checkpoint);
+    const count = decision.count;
+    if (count === undefined || count >= details.queued.length) {
+      this.#checkpoint = undefined;
+      return this.run(
+        checkpoint.plan,
+        input,
+        checkpoint.direct === true ? { forceDirect: true } : undefined,
+      );
+    }
+
+    const selected = details.queued.slice(0, count);
+    const last = selected.at(-1);
+    if (last === undefined) {
+      this.#checkpoint = undefined;
+      return this.run(checkpoint.plan, input);
+    }
+    const lastIndex = checkpoint.plan.steps.findIndex((step) => step.id === last.step);
+    const selectedSteps = checkpoint.plan.steps.slice(0, lastIndex + 1);
+    if (selected.some((entry) => isAwaitCall(entry.tool)))
+      return this.decisionResult(
+        "Partial continuation cannot release an await.<runId> join. Continue all or replace the plan.",
+        "paused",
+        true,
+        checkpoint,
+      );
+    const partial: Script = {
+      ...checkpoint.plan,
+      await: true,
+      steps: selectedSteps,
+      output: checkpoint.at,
+    };
+    return this.run(partial, input, {
+      retain: { ...checkpoint, direct: true },
+      advanced: selected.map((entry) => entry.step),
+      forceDirect: true,
+    });
+  }
+
+  private run(script: string | Script, input: InvocationInput, control: RunControl = {}) {
     return Effect.gen({ self: this }, function* () {
       const activity = yield* Ref.make({
         events: Chunk.empty<Activity>(),
@@ -511,27 +684,30 @@ export class CallScriptRuntime {
               Effect.forever(Effect.sleep(1_000).pipe(Effect.andThen(pulse(invocation)))),
             );
 
-      const validated = Effect.try({
-        try: () =>
-          this.validateJoins(
-            validateCapabilityBoundaries(
-              this.engine.validate(script, {
-                tools: this.#validationTools,
-                variables: [
-                  ...Object.keys(this.scope.vars),
-                  ...Object.keys(sessionVariables(this.scope.state)),
-                ],
-              }),
-            ),
-          ),
-        catch: SourceValidationFailure.from,
-      });
+      const validated = isSourceText(script)
+        ? Effect.try({
+            try: () =>
+              this.validateJoins(
+                validateCapabilityBoundaries(
+                  this.engine.validate(script, {
+                    tools: this.#validationTools,
+                    variables: [
+                      ...Object.keys(this.scope.vars),
+                      ...Object.keys(sessionVariables(this.scope.state)),
+                    ],
+                  }),
+                ),
+              ),
+            catch: SourceValidationFailure.from,
+          })
+        : Effect.succeed(script);
       const runPlan = (plan: Script): Effect.Effect<RunOutcome, RuntimeDefect> => {
         const usesSession =
-          plan.await === false ||
-          plan.steps.some(
-            (step) => isCallStep(step) && (step.await === false || isAwaitCall(step.call)),
-          );
+          control.forceDirect !== true &&
+          (plan.await === false ||
+            plan.steps.some(
+              (step) => isCallStep(step) && (step.await === false || isAwaitCall(step.call)),
+            ));
         if (usesSession) {
           return Effect.sync(() => this.trackPlannedBackground(plan, controller)).pipe(
             Effect.flatMap(() =>
@@ -548,16 +724,19 @@ export class CallScriptRuntime {
                 catch: RuntimeDefect.from,
               }),
             ),
-            Effect.map((result): RunOutcome => ({ kind: "session", result })),
+            Effect.map((result): RunOutcome => ({ kind: "session", result, plan })),
           );
         }
         return Effect.tryPromise({
           try: () =>
             this.#invocations.run(invocation, () =>
-              this.engine.run({ script: plan, retainOutputs: "live" }, this.scope),
+              this.engine.run(
+                { script: plan, retainOutputs: control.retain === undefined ? "live" : "all" },
+                this.scope,
+              ),
             ),
           catch: RuntimeDefect.from,
-        }).pipe(Effect.map((result): RunOutcome => ({ kind: "run", result })));
+        }).pipe(Effect.map((result): RunOutcome => ({ kind: "run", result, plan })));
       };
       const attempt = validated.pipe(
         Effect.tap((plan) => {
@@ -576,6 +755,7 @@ export class CallScriptRuntime {
         onFailure: (failure) => {
           const invalid = failure._tag === "SourceValidationFailure";
           const background = this.#session.digest();
+          if (control.retain !== undefined) this.#checkpoint = control.retain;
           return Effect.sync(() => this.reconcileBackground(background, controller)).pipe(
             Effect.andThen(closeQueued(invocation)),
             Effect.flatMap(() =>
@@ -589,16 +769,53 @@ export class CallScriptRuntime {
                 maximumBytes,
               ),
             ),
+            Effect.map((result) => {
+              if (this.#checkpoint !== undefined)
+                result.details.checkpoint = this.checkpointDetails(this.#checkpoint);
+              return result;
+            }),
           );
         },
         onSuccess: (outcome) => {
           const background = this.#session.digest();
+          const returnedAt =
+            outcome.result.status === "ok" || outcome.result.status === "done"
+              ? outcome.result.returnedAt
+              : undefined;
+          const output =
+            outcome.result.status === "ok" || outcome.result.status === "done"
+              ? outcome.result.output
+              : undefined;
+          if (returnedAt !== undefined && isThinkingCheckpoint(output)) {
+            const next = {
+              plan: control.retain?.plan ?? outcome.plan,
+              at: returnedAt,
+              note: output.note,
+            };
+            this.#checkpoint = control.forceDirect === true ? { ...next, direct: true } : next;
+          } else if (control.retain !== undefined) {
+            this.#checkpoint = control.retain;
+          } else {
+            this.#checkpoint = undefined;
+          }
           return Effect.sync(() => this.reconcileBackground(background, controller)).pipe(
             Effect.flatMap(() =>
               outcome.kind === "run"
                 ? completedResult(invocation, outcome.result, background, maximumBytes)
                 : completedSessionResult(invocation, outcome.result, background, maximumBytes),
             ),
+            Effect.map((result) => {
+              const checkpoint = this.#checkpoint;
+              if (checkpoint === undefined) return result;
+              result.details.status = result.isError ? "error" : "paused";
+              result.details.checkpoint = this.checkpointDetails(checkpoint);
+              const prefix =
+                control.advanced === undefined
+                  ? result.text
+                  : `Checkpoint advanced through: ${control.advanced.join(", ")}`;
+              result.text = `${prefix}\n${this.decisionPrompt(checkpoint)}`;
+              return result;
+            }),
           );
         },
       }).pipe(

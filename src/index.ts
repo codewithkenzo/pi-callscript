@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 
 import { isMode, loadConfig } from "./config.js";
+import { PiToolBridge } from "./pi-tool-bridge.js";
 import { CallScriptRuntime } from "./runtime.js";
 import {
   JOB_STATE_ENTRY,
@@ -21,16 +22,40 @@ import {
 } from "./types.js";
 import { renderScriptCall, renderScriptResult } from "./ui.js";
 
-const ExecuteSchema = Type.Object(
-  {
-    script: Type.String({
-      maxLength: 262_144,
-      description:
-        "CallScript JavaScript source. It is parsed into an inert plan and never evaluated as JavaScript.",
-    }),
-  },
-  { additionalProperties: false },
-);
+const ScriptSchema = Type.String({
+  maxLength: 262_144,
+  description:
+    "CallScript JavaScript source. It is parsed into an inert plan and never evaluated as JavaScript.",
+});
+
+const ExecuteSchema = Type.Union([
+  Type.Object({ script: ScriptSchema }, { additionalProperties: false }),
+  Type.Object(
+    {
+      decision: Type.Literal("continue"),
+      count: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          description: "Release next N queued call steps. Omit to release all until next think.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object({ decision: Type.Literal("stop") }, { additionalProperties: false }),
+  Type.Object(
+    {
+      decision: Type.Literal("replace"),
+      script: ScriptSchema,
+      fromScratch: Type.Optional(
+        Type.Boolean({
+          description: "Discard retained execution state before running replacement plan.",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 const RunStateSchema = Type.Object(
   {
@@ -216,10 +241,10 @@ const resultText = (result: { content: Array<{ type: string; text?: string }> })
 };
 
 export const CALLSCRIPT_TOOL_DESCRIPTION =
-  "Execute one bounded, inert JavaScript-shaped plan over fixed CallScript capabilities. Use owning Pi tools directly for Fabric, FFF, MCP, subagent, and extension work.";
+  "Execute one bounded, inert JavaScript-shaped plan over fixed capabilities and registered Pi tools through pi({ tool, args }).";
 
 export const CALLSCRIPT_MODE_PROMPT =
-  "CallScript is available beside other Pi tools. Use it for bounded programs over its listed fixed capabilities. Use the owning Pi tool directly for Fabric, FFF, MCP, subagent, and other extension operations. Work in short evidence-driven phases: parallelize independent calls and await dependencies. Use think when later calls require judgment: a paused result returns control to you for reasoning; invoke callscript again with the unchanged script to resume from saved results. Use snapshot before changes that may need undo.";
+  'CallScript is available beside other Pi tools. Use fixed capabilities directly. Discover registered Pi tools with tools({ query }) and invoke them through pi({ tool, args }). Work in short evidence-driven phases: parallelize independent fixed calls and await dependencies. Bridged Pi calls serialize and are never repeat-safe. think creates a decision checkpoint. After reasoning, call callscript with { decision: "continue" }, { decision: "continue", count: N }, { decision: "stop" }, or { decision: "replace", script, fromScratch? }. Do not resubmit an initial script while a checkpoint is pending. Use snapshot before changes that may need undo.';
 
 export const activeToolsForMode = (mode: Mode, currentTools: readonly string[]) => {
   if (mode === "off") return currentTools.filter((name) => name !== MAIN_TOOL);
@@ -229,10 +254,11 @@ export const activeToolsForMode = (mode: Mode, currentTools: readonly string[]) 
 };
 
 export default async function callscriptExtension(pi: ExtensionAPI) {
+  const piTools = await PiToolBridge.create();
   const persistJob = (job: JobReceipt) =>
     pi.appendEntry<PersistedJobReceipt>(JOB_STATE_ENTRY, { version: 1, job });
   let config = await Effect.runPromise(loadConfig(process.cwd()));
-  let runtime = new CallScriptRuntime(process.cwd(), config, persistJob);
+  let runtime = new CallScriptRuntime(process.cwd(), config, persistJob, piTools);
   let mode: Mode = config.mode;
 
   const applyMode = (ctx: ExtensionContext) => {
@@ -245,7 +271,7 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
       const state = keepState ? runtime.scope.state : restoredState(ctx);
       const jobs = keepState ? runtime.jobs() : restoredJobs(ctx);
       const nextConfig = yield* loadConfig(ctx.cwd);
-      const nextRuntime = new CallScriptRuntime(ctx.cwd, nextConfig, persistJob);
+      const nextRuntime = new CallScriptRuntime(ctx.cwd, nextConfig, persistJob, piTools);
       yield* nextRuntime.restore(state);
       yield* nextRuntime.restoreJobs(jobs);
       yield* runtime.reset();
@@ -259,14 +285,32 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
     description: `${CALLSCRIPT_TOOL_DESCRIPTION}\n\n${runtime.languageCard()}`,
     parameters: ExecuteSchema,
     executionMode: "sequential",
-    async execute(toolCallId, { script }, signal, onUpdate, ctx) {
+    async execute(toolCallId, input, signal, onUpdate, ctx) {
+      const invocation = {
+        id: toolCallId,
+        signal,
+        ctx,
+        update: onUpdate,
+      };
       const result = await Effect.runPromise(
-        runtime.execute(script, {
-          id: toolCallId,
-          signal,
-          ctx,
-          update: onUpdate,
-        }),
+        "decision" in input
+          ? runtime.decide(
+              input.decision === "replace"
+                ? input.fromScratch === undefined
+                  ? { action: "replace", script: input.script }
+                  : {
+                      action: "replace",
+                      script: input.script,
+                      fromScratch: input.fromScratch,
+                    }
+                : input.decision === "continue"
+                  ? input.count === undefined
+                    ? { action: "continue" }
+                    : { action: "continue", count: input.count }
+                  : { action: "stop" },
+              invocation,
+            )
+          : runtime.execute(input.script, invocation),
       );
       return {
         content: [{ type: "text", text: result.text }],
@@ -274,9 +318,15 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
         isError: result.isError,
       };
     },
-    renderCall({ script }, theme, context) {
+    renderCall(input, theme, context) {
       const phase = !context.isPartial ? "settled" : context.executionStarted ? "running" : "ready";
-      return renderScriptCall(script, context.expanded, phase, theme);
+      const source =
+        "script" in input
+          ? input.script
+          : input.decision === "continue" && input.count !== undefined
+            ? `checkpoint: continue next ${input.count}`
+            : `checkpoint: ${input.decision}`;
+      return renderScriptCall(source, context.expanded, phase, theme);
     },
     renderResult(result, options: ToolRenderResultOptions, theme, context) {
       const candidate: unknown = result.details;
@@ -292,6 +342,7 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    piTools.capture(pi);
     await Effect.runPromise(rebuild(ctx, false));
     mode = restoredMode(ctx) ?? config.mode;
     applyMode(ctx);
@@ -309,21 +360,29 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
     async handler(args, ctx) {
       const command = args.trim().toLowerCase();
       if (command === "status") {
+        const bridge = piTools.status();
+        const bridgeText = bridge.available
+          ? `${bridge.tools} Pi tools via ${bridge.host} bridge`
+          : `Pi bridge unavailable: ${bridge.reason ?? "unsupported host"}`;
         ctx.ui.notify(
-          `CallScript is ${mode} and additive; ${runtime.tools.length} fixed tools; concurrency ${config.limits.maxConcurrency}.`,
+          `CallScript is ${mode} and additive; ${runtime.tools.length} fixed tools; ${bridgeText}; concurrency ${config.limits.maxConcurrency}.`,
         );
         return;
       }
       if (command === "help") {
         ctx.ui.notify(
-          "Usage: /callscript [on|off|status|jobs|help|doctor|reload|reset]. CallScript runs fixed bounded capabilities. Use direct Pi tools for Fabric, FFF, MCP, subagent, and extensions.",
+          "Usage: /callscript [on|off|status|jobs|help|doctor|reload|reset]. Use fixed capabilities directly. Use tools({ query }) plus pi({ tool, args }) for registered Pi tools.",
           "info",
         );
         return;
       }
       if (command === "doctor") {
+        const bridge = piTools.status();
+        const bridgeText = bridge.available
+          ? `ready (${bridge.host}, ${bridge.tools} tools)`
+          : `unavailable (${bridge.reason ?? "unsupported host"})`;
         ctx.ui.notify(
-          `CallScript doctor: ready; ${runtime.tools.length} fixed capabilities; output bound ${config.maxOutputBytes ?? 10_240} bytes; HTTP bound ${config.maxHttpResultBytes} bytes.`,
+          `CallScript doctor: ready; Pi bridge ${bridgeText}; ${runtime.tools.length} fixed capabilities; output bound ${config.maxOutputBytes ?? 10_240} bytes; HTTP bound ${config.maxHttpResultBytes} bytes.`,
           "info",
         );
         return;
@@ -333,6 +392,7 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
         return;
       }
       if (command === "reload") {
+        piTools.capture(pi);
         await Effect.runPromise(rebuild(ctx, true));
         applyMode(ctx);
         ctx.ui.notify("CallScript reloaded.", "info");

@@ -77,7 +77,7 @@ describe("stable CallScript language card", () => {
     expect(first).toContain("try/catch recovery");
     expect(first).toContain("tagged templates");
     expect(first).toContain("per-call .catch");
-    expect(first).toContain("use owning Pi tools directly for Fabric, FFF, MCP, subagent");
+    expect(first).toContain('invoke with pi({ tool: "exact_name", args: { ... } })');
     expect(first).not.toContain(firstCwd);
     expect(first).not.toContain(secondCwd);
     expect(CALLSCRIPT_MODE_PROMPT).not.toMatch(/timestamp|counter|progress/i);
@@ -113,7 +113,17 @@ describe("stable CallScript language card", () => {
     );
 
     expect(result.isError, result.text).toBe(false);
-    expect(JSON.parse(result.text)).toEqual({ fixed: true, names: ["read"] });
+    expect(JSON.parse(result.text)).toEqual({
+      fixed: true,
+      names: ["read"],
+      pi: [],
+      bridge: {
+        available: false,
+        host: "unsupported",
+        reason: "Pi tool bridge is not configured",
+        tools: 0,
+      },
+    });
     expect(runtime.tools.map((entry) => entry.name)).not.toContain("fabric_exec");
   });
 });

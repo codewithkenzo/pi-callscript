@@ -26,6 +26,7 @@ import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
 import { StreamUpdateFailure, ToolInvocationFailure } from "./errors.js";
+import type { PiToolProvider } from "./pi-tool-bridge.js";
 import type { ActivityPresentation } from "./presentation.js";
 import { createInvocationReadDefinition } from "./read-capability.js";
 import { SnapshotStore } from "./snapshots.js";
@@ -176,6 +177,7 @@ const PlannedArgsSchema = Type.Object(
     note: Type.Optional(Type.String()),
     paths: Type.Optional(Type.Array(Type.String())),
     snapshot: Type.Optional(Type.String()),
+    tool: Type.Optional(Type.String()),
   },
   { additionalProperties: true },
 );
@@ -229,6 +231,8 @@ const plannedMeta = (step: CallStep, config: ExtensionConfig): ActivityMeta => {
       if (expectedMs !== undefined) meta.expectedMs = expectedMs;
       return meta;
     }
+    case "pi":
+      return { target: args?.tool ?? step.id };
     case "think":
       return { target: args?.note ?? "reason before continuing" };
     case "snapshot":
@@ -547,6 +551,14 @@ const ToolsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const PiSchema = Type.Object(
+  {
+    tool: Type.String({ minLength: 1, maxLength: 200 }),
+    args: Type.Record(Type.String(), Type.Unknown()),
+  },
+  { additionalProperties: false },
+);
+
 const FIXED_CAPABILITY_NAMES = [
   "read",
   "write",
@@ -556,6 +568,7 @@ const FIXED_CAPABILITY_NAMES = [
   "list",
   "run",
   "http",
+  "pi",
   "wait",
   "think",
   "snapshot",
@@ -650,16 +663,64 @@ const limitedBody = (response: Response, maxBytes: number) => {
   return readBody(reader, maxBytes).pipe(Effect.ensuring(closeReader(reader)));
 };
 
+const bridgedResult = (result: AgentToolResult<unknown>): JsonValue => {
+  const text = result.content
+    .filter((entry) => entry.type === "text")
+    .map((entry) => entry.text)
+    .join("\n");
+  const images = result.content
+    .filter((entry) => entry.type === "image")
+    .map((entry) => ({
+      mimeType: entry.mimeType,
+      bytes: Buffer.byteLength(entry.data, "base64"),
+    }));
+  if (images.length === 0) return text;
+  return { text, images };
+};
+
+const bridgedSummary = (result: AgentToolResult<unknown>) => {
+  const text = result.content
+    .filter((entry) => entry.type === "text")
+    .map((entry) => entry.text)
+    .join("\n");
+  const images = result.content.filter((entry) => entry.type === "image").length;
+  const bytes = Buffer.byteLength(text, "utf8");
+  return images === 0 ? `${bytes} text bytes` : `${bytes} text bytes · ${images} images`;
+};
+
+const forwardBridgedUpdate = (active: Invocation, result: AgentToolResult<unknown>) => {
+  if (active.update === undefined) return;
+  const update = Ref.get(active.activity).pipe(
+    Effect.flatMap((state) =>
+      publishUntilFailure(active, {
+        content: result.content,
+        details: progressDetails(active, state),
+      }),
+    ),
+  );
+  Effect.runFork(update);
+};
+
 export const createCapabilities = (
   cwd: string,
   config: ExtensionConfig,
   source: InvocationSource,
   snapshots: SnapshotStore,
+  piTools?: PiToolProvider,
 ): readonly AnyScriptTool[] => {
   const run =
     process.platform === "win32"
       ? createPowerShellToolDefinition(cwd)
       : createBashToolDefinition(cwd);
+  let bridgeQueue = Promise.resolve();
+  const serialBridge = <T>(operation: () => Promise<T>) => {
+    const result = bridgeQueue.then(operation, operation);
+    bridgeQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
   return [
     adapt(
       "read",
@@ -790,9 +851,50 @@ export const createCapabilities = (
       },
     }),
     tool({
+      name: "pi",
+      description:
+        "Invoke any registered Pi tool except callscript. Pass the exact Pi tool name and its argument object.",
+      inputSchema: jsonSchema(PiSchema),
+      execute(raw: Static<typeof PiSchema>, call) {
+        const program = Effect.try({
+          try: () => Value.Parse(PiSchema, raw),
+          catch: (cause) => ToolInvocationFailure.from("pi", cause),
+        }).pipe(
+          Effect.flatMap((args) =>
+            withActivity(source, call, { target: args.tool }, (active) =>
+              Effect.tryPromise({
+                try: () =>
+                  serialBridge(async () => {
+                    if (active.signal?.aborted === true) throw new Error("Operation aborted");
+                    if (args.tool === "callscript")
+                      throw new Error("Recursive callscript invocation is not allowed");
+                    if (piTools === undefined) throw new Error("Pi tool bridge is not configured");
+                    return piTools.invoke(
+                      args.tool,
+                      `${active.id}:${call.stepId}:${args.tool}`,
+                      args.args,
+                      active.signal,
+                      (result) => forwardBridgedUpdate(active, result),
+                      active.ctx,
+                    );
+                  }),
+                catch: (cause) => ToolInvocationFailure.from(args.tool, cause),
+              }).pipe(
+                Effect.map((result) => ({
+                  value: bridgedResult(result),
+                  summary: bridgedSummary(result),
+                })),
+              ),
+            ),
+          ),
+        );
+        return Effect.runPromise(program);
+      },
+    }),
+    tool({
       name: "tools",
       description:
-        "Inspect names of fixed CallScript capabilities. This does not discover Pi tools.",
+        "Inspect fixed CallScript capabilities and registered Pi tools. Pi entries include exact argument schemas.",
       inputSchema: jsonSchema(ToolsSchema),
       execute(raw: Static<typeof ToolsSchema>, call) {
         const program = Effect.try({
@@ -806,9 +908,33 @@ export const createCapabilities = (
                 query === undefined
                   ? [...FIXED_CAPABILITY_NAMES]
                   : FIXED_CAPABILITY_NAMES.filter((name) => name.includes(query));
+              const registered = (piTools?.tools() ?? [])
+                .filter((entry) => entry.name !== "callscript")
+                .filter(
+                  (entry) =>
+                    query === undefined ||
+                    entry.name.toLowerCase().includes(query) ||
+                    entry.description.toLowerCase().includes(query),
+                )
+                .map((entry) => ({
+                  name: entry.name,
+                  description: entry.description,
+                  parameters: entry.parameters,
+                  source: entry.sourceInfo,
+                }));
               return Effect.succeed({
-                value: { fixed: true, names },
-                summary: `${names.length} fixed capabilities`,
+                value: {
+                  fixed: true,
+                  names,
+                  pi: registered,
+                  bridge: piTools?.status() ?? {
+                    available: false,
+                    host: "unsupported",
+                    reason: "Pi tool bridge is not configured",
+                    tools: 0,
+                  },
+                },
+                summary: `${names.length} fixed · ${registered.length} Pi tools`,
               });
             }),
           ),
@@ -843,7 +969,7 @@ export const createCapabilities = (
     tool({
       name: "think",
       description:
-        "Pause this execution phase so the agent can reason before continuing. Re-run the same script to continue past the checkpoint, or start a new script using published results.",
+        "Pause before downstream calls. Next CallScript invocation must choose continue all, continue next N queued calls, stop, or replace with a revised plan.",
       inputSchema: jsonSchema(ThinkSchema),
       execute(raw: Static<typeof ThinkSchema>, call) {
         const program = Effect.try({
@@ -873,7 +999,7 @@ export const createCapabilities = (
     tool({
       name: "snapshot",
       description:
-        "Capture exact file contents before edits. Missing files are remembered so undo removes files created later.",
+        "Capture exact file contents before edits. Returns a receipt object; pass receipt.id to undo. Missing files are remembered so undo removes files created later.",
       inputSchema: jsonSchema(SnapshotSchema),
       execute(raw: Static<typeof SnapshotSchema>, call) {
         const program = Effect.try({
@@ -904,7 +1030,8 @@ export const createCapabilities = (
     }),
     tool({
       name: "undo",
-      description: "Restore every file captured by a session-local snapshot.",
+      description:
+        "Restore every file captured by a session-local snapshot. Pass the snapshot receipt id string, not the receipt object.",
       inputSchema: jsonSchema(UndoSchema),
       execute(raw: Static<typeof UndoSchema>, call) {
         const program = Effect.try({

@@ -30,3 +30,32 @@ jobs:
       - run: bun run smoke
       - run: node bin/pi-callscript.mjs
       - run: npm pack --dry-run
+
+  pi-compatibility:
+    name: Pi ${{ matrix.pi-version }} compatibility
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pi-version: [locked, latest]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: Use latest Pi packages
+        if: matrix.pi-version == 'latest'
+        run: >-
+          bun add --dev --ignore-scripts
+          @earendil-works/pi-coding-agent@latest
+          @earendil-works/pi-tui@latest
+      - name: Record resolved Pi version
+        run: node -p "JSON.parse(require('fs').readFileSync('node_modules/@earendil-works/pi-coding-agent/package.json', 'utf8')).version"
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run smoke

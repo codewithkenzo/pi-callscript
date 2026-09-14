@@ -7,7 +7,7 @@ description: Use Pi CallScript to compose multiple coding-tool actions into deli
 
 Requires the `pi-callscript` Pi extension and its `callscript` tool.
 
-> CallScript is available beside other Pi tools. Use it for bounded programs over its listed fixed capabilities. Use the owning Pi tool directly for Fabric, FFF, MCP, subagent, and other extension operations.
+> CallScript is available beside other Pi tools. Use fixed capabilities directly. Discover registered Pi tools with `tools({ query })`, then invoke one with `pi({ tool, args })`.
 
 `on` adds one `callscript` entry to current active tools. `off` removes only `callscript`. Both transitions preserve current state owned by other extensions.
 
@@ -61,7 +61,21 @@ CallScript additions:
 - `think({ note? })` returns control for a full model reasoning turn.
 - `snapshot({ paths })` captures exact file contents and remembers missing files. It returns a receipt object: `{ id, files, bytes }`.
 - `undo({ snapshot: point.id })` restores a session-local snapshot by ID. Pass the receipt’s `id` string, never the full receipt object.
-- `tools({ query? })` inspects fixed CallScript capability names only.
+- `tools({ query? })` inspects fixed capabilities and registered Pi tools with exact schemas.
+- `pi({ tool, args })` invokes any registered Pi tool except recursive `callscript`.
+
+Use exact gateway syntax:
+
+```js
+const available = await tools({ query: "agent_browser" });
+const page = await pi({
+  tool: "agent_browser",
+  args: { args: ["open", "https://example.com"] },
+});
+return { available, page };
+```
+
+Pi gateway calls serialize and are never repeat-safe. Text results become strings. Image payloads and UI-only details do not enter script state. npm/Node Pi supports gateway. Standalone compiled Pi falls back to fixed tools and reports bridge unavailable. Bridged calls emit Pi `tool_call` and `tool_result` hooks and honor policy blocks or mutations. `tool_execution_*` hooks see outer `callscript` execution only.
 
 Keep reads narrow with `offset` and `limit`, cap searches, and give commands a realistic timeout in seconds.
 
@@ -87,7 +101,15 @@ const checks = await run({ command: "bun test", timeout: 120 });
 return { snapshot: point.id, changed, checks };
 ```
 
-At the checkpoint, downstream calls remain queued. Reason from the completed wave, then invoke `callscript` again with the exact unchanged script. Settled calls are reused and execution resumes after `think`.
+At the checkpoint, downstream calls remain queued. Reason from the completed wave, then invoke `callscript` with one explicit decision:
+
+- `{ decision: "continue" }` releases all queued call steps until the next `think`.
+- `{ decision: "continue", count: N }` releases the next N queued call steps, then pauses again.
+- `{ decision: "stop" }` discards the remaining queue.
+- `{ decision: "replace", script: "..." }` reconciles a revised plan with completed work.
+- `{ decision: "replace", script: "...", fromScratch: true }` discards retained execution state first. It does not reverse external side effects.
+
+A pending checkpoint rejects a new initial `{ script }` submission. Selected partial steps run to settlement, including calls authored without `await`. Partial continuation rejects `await.<runId>` join steps; continue all or replace that plan. Use `snapshot` before reversible file work and pass `receipt.id` to `undo`.
 
 The `note` is only the checkpoint label. The `think` call itself creates the reasoning turn. Use it sparingly: deterministic dataflow does not need a model pause.
 
@@ -187,10 +209,10 @@ Do not call `undo({ snapshot: point })`; the whole receipt is not a snapshot ID.
 
 ## Protect context and prompt-cache efficiency
 
-- Use `callscript` for bounded programs over its fixed capabilities. Use other Pi tools through their owning extension.
+- Use fixed capabilities directly. Use `pi({ tool, args })` when a registered Pi tool belongs in same bounded dataflow.
 - Put independent calls in one wave so their results enter one reasoning turn.
 - Reuse named session bindings rather than re-reading unchanged evidence.
-- Resume a `think` checkpoint with the exact script so settled work is reused.
+- Resolve a `think` checkpoint with one explicit decision. Use `replace` only when downstream plan must change.
 - Narrow file reads and searches before they produce large results.
 - Return compact projections. Do not echo large source files or command logs once downstream steps have consumed them.
 - Split at genuine decision boundaries. Long scripts with many speculative branches are harder to reuse than two focused phases.

@@ -7,6 +7,17 @@ import type { ActivityPresentation, OperationPresentationDetails } from "./prese
 export const MODES = ["off", "on"] as const;
 export type Mode = (typeof MODES)[number];
 
+export type CheckpointDecision =
+  | { readonly action: "continue"; readonly count?: number }
+  | { readonly action: "stop" }
+  | { readonly action: "replace"; readonly script: string; readonly fromScratch?: boolean };
+
+export interface CheckpointDetails {
+  readonly at: string;
+  readonly note: string;
+  readonly queued: ReadonlyArray<{ readonly step: string; readonly tool: string }>;
+}
+
 export interface ExtensionConfig {
   mode: Mode;
   limits: {
@@ -70,6 +81,7 @@ export interface RunDetails {
   state?: RunState;
   background?: Record<string, RunDigestEntry>;
   jobs?: JobReceipt[];
+  checkpoint?: CheckpointDetails;
 }
 
 export interface ActivityState {

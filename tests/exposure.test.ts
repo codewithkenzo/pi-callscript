@@ -26,6 +26,7 @@ describe("CallScript additive exposure", () => {
         if (event === "session_start") sessionStart = handler;
       },
       getActiveTools: () => activeTools,
+      getAllTools: () => [],
       setActiveTools(nextTools: string[]) {
         activeTools = nextTools;
       },
@@ -64,6 +65,7 @@ describe("CallScript additive exposure", () => {
       appendEntry() {},
       on() {},
       getActiveTools: () => [...initialTools],
+      getAllTools: () => [],
       setActiveTools() {},
     };
     // SAFETY: extension initialization uses only host methods supplied above.
@@ -132,6 +134,7 @@ describe("CallScript additive exposure", () => {
           if (event === "session_start") sessionStart = handler;
         },
         getActiveTools: () => [...initialTools],
+        getAllTools: () => [],
         setActiveTools() {},
       };
       // SAFETY: lifecycle harness supplies every extension method used by this test.
@@ -189,6 +192,7 @@ describe("CallScript additive exposure", () => {
           if (event === "session_start") restoredStart = handler;
         },
         getActiveTools: () => [...initialTools],
+        getAllTools: () => [],
         setActiveTools() {},
       };
       // SAFETY: fresh lifecycle harness supplies every extension method used by this test.

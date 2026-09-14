@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter, once } from "node:events";
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { loadConfig } from "../src/config.js";
 import { ConfigError } from "../src/errors.js";
+import type { PiToolProvider } from "../src/pi-tool-bridge.js";
 import { CallScriptRuntime } from "../src/runtime.js";
 import {
   EXTENSION_TOOLS,
@@ -193,7 +194,8 @@ return { probes, final };
 
     expect(paused.isError).toBe(false);
     expect(paused.details.status).toBe("paused");
-    expect(paused.text).toBe("Paused: inspect the first wave");
+    expect(paused.text).toContain("Paused: inspect the first wave");
+    expect(paused.text).toContain("Decision required");
     expect(
       paused.details.activity.some(
         (event) => event.phase === "queued" && event.target === "after-thinking.txt",
@@ -208,13 +210,117 @@ return { probes, final };
       code: "ENOENT",
     });
 
-    const resumed = await Effect.runPromise(runtime.execute(script, invocation(cwd)));
+    const ambiguous = await Effect.runPromise(runtime.execute(script, invocation(cwd)));
+    expect(ambiguous.isError).toBe(true);
+    expect(ambiguous.text).toContain("Checkpoint decision required");
+
+    const resumed = await Effect.runPromise(
+      runtime.decide({ action: "continue" }, invocation(cwd)),
+    );
 
     expect(resumed.isError, resumed.text).toBe(false);
     expect(resumed.details.status).toBe("ok");
     await expect(readFile(join(cwd, "after-thinking.txt"), "utf8")).resolves.toBe(
       "chosen after reasoning",
     );
+  });
+
+  test("releases a selected number of queued calls before asking again", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const script = `
+await think({ note: "choose the write scope" });
+const first = await write({ path: "first.txt", content: "first" });
+const second = await write({ path: "second.txt", content: "second" });
+return { first, second };
+`;
+
+    const paused = await Effect.runPromise(runtime.execute(script, invocation(cwd)));
+    expect(paused.details.checkpoint?.queued).toEqual([
+      { step: "first", tool: "write" },
+      { step: "second", tool: "write" },
+    ]);
+
+    const advanced = await Effect.runPromise(
+      runtime.decide({ action: "continue", count: 1 }, invocation(cwd)),
+    );
+    expect(advanced.isError, advanced.text).toBe(false);
+    expect(advanced.details.status).toBe("paused");
+    expect(advanced.text).toContain("Checkpoint advanced through: first");
+    expect(advanced.details.checkpoint?.queued).toEqual([{ step: "second", tool: "write" }]);
+    await expect(readFile(join(cwd, "first.txt"), "utf8")).resolves.toBe("first");
+    await expect(readFile(join(cwd, "second.txt"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    const completed = await Effect.runPromise(
+      runtime.decide({ action: "continue" }, invocation(cwd)),
+    );
+    expect(completed.isError, completed.text).toBe(false);
+    expect(completed.details.status).toBe("ok");
+    await expect(readFile(join(cwd, "second.txt"), "utf8")).resolves.toBe("second");
+  });
+
+  test("stops or replaces a paused plan explicitly", async () => {
+    const cwd = await workspace();
+    const stoppedRuntime = new CallScriptRuntime(cwd, config);
+    const pausedScript = `
+await think({ note: "decide" });
+await write({ path: "discarded.txt", content: "no" });
+return "unreachable";
+`;
+
+    await Effect.runPromise(stoppedRuntime.execute(pausedScript, invocation(cwd)));
+    const stopped = await Effect.runPromise(
+      stoppedRuntime.decide({ action: "stop" }, invocation(cwd)),
+    );
+    expect(stopped.isError).toBe(false);
+    expect(stopped.text).toContain("queued calls were discarded");
+    await expect(readFile(join(cwd, "discarded.txt"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    const replacementRuntime = new CallScriptRuntime(cwd, config);
+    await Effect.runPromise(replacementRuntime.execute(pausedScript, invocation(cwd)));
+    const replaced = await Effect.runPromise(
+      replacementRuntime.decide(
+        {
+          action: "replace",
+          script:
+            'const replacement = await write({ path: "replacement.txt", content: "yes" }); return replacement;',
+          fromScratch: true,
+        },
+        invocation(cwd),
+      ),
+    );
+    expect(replaced.isError, replaced.text).toBe(false);
+    await expect(readFile(join(cwd, "replacement.txt"), "utf8")).resolves.toBe("yes");
+    await expect(readFile(join(cwd, "discarded.txt"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  test("clears checkpoint ownership after resumed work fails", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const broken = `
+await think({ note: "inspect" });
+await undo({ snapshot: "missing" });
+return "unreachable";
+`;
+
+    await Effect.runPromise(runtime.execute(broken, invocation(cwd)));
+    const failed = await Effect.runPromise(runtime.decide({ action: "continue" }, invocation(cwd)));
+    expect(failed.isError).toBe(true);
+
+    const corrected = await Effect.runPromise(
+      runtime.execute(
+        'const fixed = await write({ path: "fixed.txt", content: "fixed" }); return fixed;',
+        invocation(cwd),
+      ),
+    );
+    expect(corrected.isError, corrected.text).toBe(false);
+    await expect(readFile(join(cwd, "fixed.txt"), "utf8")).resolves.toBe("fixed");
   });
 
   test("restores changed and newly created files from a named snapshot", async () => {
@@ -832,5 +938,270 @@ return ready;
     expect(result.details.status).toBe("invalid");
     expect(result.details.calls).toBe(0);
     expect(result.text).toMatch(/^CS00[1-4]:/);
+  });
+});
+
+const providerFor = (definitions: readonly ToolDefinition[]): PiToolProvider => ({
+  async invoke(name, id, raw, signal, onUpdate, ctx) {
+    const definition = definitions.find((entry) => entry.name === name);
+    if (definition === undefined) throw new Error(`Unknown Pi tool: ${name}`);
+    const prepared = definition.prepareArguments?.(raw) ?? raw;
+    const params = Value.Parse(definition.parameters, prepared);
+    return definition.execute(id, params, signal, onUpdate, ctx);
+  },
+  tools(): ToolInfo[] {
+    return definitions.map((entry) => {
+      const info: ToolInfo = {
+        name: entry.name,
+        description: entry.description,
+        parameters: entry.parameters,
+        sourceInfo: {
+          path: `tests/${entry.name}.ts`,
+          source: "tests",
+          scope: "temporary",
+          origin: "top-level",
+        },
+      };
+      if (entry.promptGuidelines !== undefined) info.promptGuidelines = entry.promptGuidelines;
+      return info;
+    });
+  },
+  status() {
+    return { available: true, host: "unbundled", tools: definitions.length };
+  },
+});
+
+describe("Pi tool gateway", () => {
+  test("prepares, validates, invokes, streams, and normalizes model-visible content", async () => {
+    const cwd = await workspace();
+    const EchoSchema = Type.Object({ value: Type.String() }, { additionalProperties: false });
+    const LegacySchema = Type.Object({ legacy: Type.String() }, { additionalProperties: false });
+    const echo: ToolDefinition<typeof EchoSchema> = {
+      name: "echo_extension",
+      label: "Echo extension",
+      description: "Echo prepared input",
+      parameters: EchoSchema,
+      prepareArguments(raw) {
+        const legacy = Value.Parse(LegacySchema, raw);
+        return { value: legacy.legacy };
+      },
+      async execute(_id, args, _signal, onUpdate) {
+        onUpdate?.({ content: [{ type: "text", text: "half" }], details: {} });
+        return {
+          content: [{ type: "text", text: `echo:${args.value}` }],
+          details: { hidden: true },
+        };
+      },
+    };
+    const updates: string[] = [];
+    const runtime = new CallScriptRuntime(cwd, config, () => undefined, providerFor([echo]));
+
+    const result = await Effect.runPromise(
+      runtime.execute(
+        'return await pi({ tool: "echo_extension", args: { legacy: "ready" } });',
+        invocation(cwd, (update) => {
+          const text = update.content.find((entry) => entry.type === "text")?.text;
+          if (text !== undefined) updates.push(text);
+        }),
+      ),
+    );
+
+    expect(result.isError, result.text).toBe(false);
+    expect(result.text).toBe("echo:ready");
+    expect(updates).toContain("half");
+    expect(result.details.activity.at(-1)).toMatchObject({
+      tool: "pi",
+      target: "echo_extension",
+      phase: "done",
+    });
+  });
+
+  test("returns bounded image metadata and omits image payload plus UI details", async () => {
+    const cwd = await workspace();
+    const image: ToolDefinition = {
+      name: "image_extension",
+      label: "Image extension",
+      description: "Return mixed content",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        return {
+          content: [
+            { type: "text", text: "caption" },
+            {
+              type: "image",
+              data: Buffer.from("pixels").toString("base64"),
+              mimeType: "image/png",
+            },
+          ],
+          details: { secret: "ui-only" },
+        };
+      },
+    };
+    const runtime = new CallScriptRuntime(cwd, config, () => undefined, providerFor([image]));
+
+    const result = await Effect.runPromise(
+      runtime.execute('return await pi({ tool: "image_extension", args: {} });', invocation(cwd)),
+    );
+
+    expect(JSON.parse(result.text)).toEqual({
+      images: [{ bytes: 6, mimeType: "image/png" }],
+      text: "caption",
+    });
+    expect(result.text).not.toContain("pixels");
+    expect(result.text).not.toContain("ui-only");
+  });
+
+  test("rejects invalid args, unknown tools, and recursive callscript", async () => {
+    const cwd = await workspace();
+    const StrictSchema = Type.Object({ count: Type.Number() }, { additionalProperties: false });
+    const strict: ToolDefinition<typeof StrictSchema> = {
+      name: "strict_extension",
+      label: "Strict extension",
+      description: "Strict input",
+      parameters: StrictSchema,
+      async execute() {
+        return { content: [{ type: "text", text: "called" }], details: {} };
+      },
+    };
+    const runtime = new CallScriptRuntime(cwd, config, () => undefined, providerFor([strict]));
+    const scripts = [
+      'return await pi({ tool: "strict_extension", args: { count: "bad" } });',
+      'return await pi({ tool: "missing", args: {} });',
+      'return await pi({ tool: "callscript", args: {} });',
+    ];
+
+    const results = await Promise.all(
+      scripts.map((script) => Effect.runPromise(runtime.execute(script, invocation(cwd)))),
+    );
+
+    expect(results.every((result) => result.isError)).toBe(true);
+    expect(results[0]?.text).toContain("strict_extension");
+    expect(results[1]?.text).toContain("Unknown Pi tool: missing");
+    expect(results[2]?.text).toContain("Recursive callscript invocation is not allowed");
+  });
+
+  test("forwards cancellation and thrown tool failures", async () => {
+    const cwd = await workspace();
+    const started = Promise.withResolvers<void>();
+    let aborted = false;
+    const blocking: ToolDefinition = {
+      name: "blocking_extension",
+      label: "Blocking extension",
+      description: "Wait for abort",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      execute(_id, _args, signal) {
+        started.resolve();
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(new Error("bridge abort observed"));
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const broken: ToolDefinition = {
+      name: "broken_extension",
+      label: "Broken extension",
+      description: "Throw failure",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        throw new Error("extension exploded");
+      },
+    };
+    const provider = providerFor([blocking, broken]);
+    const runtime = new CallScriptRuntime(cwd, config, () => undefined, provider);
+    const controller = new AbortController();
+    const running = Effect.runPromise(
+      runtime.execute(
+        'return await pi({ tool: "blocking_extension", args: {} });',
+        invocation(cwd, undefined, controller.signal),
+      ),
+    );
+    await started.promise;
+    controller.abort();
+
+    const cancelled = await running;
+    const failed = await Effect.runPromise(
+      runtime.execute('return await pi({ tool: "broken_extension", args: {} });', invocation(cwd)),
+    );
+    expect(aborted).toBe(true);
+    expect(cancelled.isError).toBe(true);
+    expect(cancelled.text).toContain("bridge abort observed");
+    expect(failed.isError).toBe(true);
+    expect(failed.text).toContain("extension exploded");
+  });
+
+  test("serializes bridged calls and marks detached calls non-repeat-safe", async () => {
+    const cwd = await workspace();
+    let active = 0;
+    let maximumActive = 0;
+    const serial: ToolDefinition = {
+      name: "serial_extension",
+      label: "Serial extension",
+      description: "Track concurrency",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+        return { content: [{ type: "text", text: "done" }], details: {} };
+      },
+    };
+    const runtime = new CallScriptRuntime(cwd, config, () => undefined, providerFor([serial]));
+    const result = await Effect.runPromise(
+      runtime.execute(
+        `
+const first = pi({ tool: "serial_extension", args: {} });
+const second = pi({ tool: "serial_extension", args: {} });
+const ready = await wait({ milliseconds: 0 });
+return ready;
+`,
+        invocation(cwd),
+      ),
+    );
+
+    expect(result.isError, result.text).toBe(false);
+    expect(maximumActive).toBe(1);
+    expect(result.details.jobs?.filter((job) => job.label.includes("pi"))).toEqual([
+      expect.objectContaining({ repeatSafe: false }),
+      expect.objectContaining({ repeatSafe: false }),
+    ]);
+    await Effect.runPromise(runtime.reset());
+  });
+
+  test("keeps fixed names direct when Pi registry contains same name", async () => {
+    const cwd = await workspace();
+    await writeFile(join(cwd, "source.txt"), "fixed read");
+    const collision: ToolDefinition = {
+      name: "read",
+      label: "Collision",
+      description: "Pi registry collision",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        return { content: [{ type: "text", text: "bridged read" }], details: {} };
+      },
+    };
+    const runtime = new CallScriptRuntime(cwd, config, () => undefined, providerFor([collision]));
+
+    const result = await Effect.runPromise(
+      runtime.execute(
+        `
+const fixed = await read({ path: "source.txt" });
+const bridged = await pi({ tool: "read", args: {} });
+return { fixed, bridged };
+`,
+        invocation(cwd),
+      ),
+    );
+
+    expect(JSON.parse(result.text)).toMatchObject({
+      fixed: expect.stringContaining("fixed read"),
+      bridged: "bridged read",
+    });
   });
 });
