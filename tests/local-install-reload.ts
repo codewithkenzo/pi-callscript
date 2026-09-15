@@ -115,7 +115,7 @@ async function installPacked(agentDir: string, tarball: string): Promise<void> {
   });
   await writeFile(
     join(agentDir, "settings.json"),
-    JSON.stringify({ packages: ["npm:pi-callscript@0.3.0"] }),
+    JSON.stringify({ packages: ["npm:pi-callscript@0.3.1"] }),
   );
 }
 
