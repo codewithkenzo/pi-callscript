@@ -4,7 +4,7 @@ import type {
   ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
 import { isMode, loadConfig } from "./config.js";
@@ -28,17 +28,40 @@ const ScriptSchema = Type.String({
     "CallScript JavaScript source. It is parsed into an inert plan and never evaluated as JavaScript.",
 });
 
-const ExecuteSchema = Type.Union([
+const CountSchema = Type.Integer({
+  minimum: 1,
+  description: "Release next N queued call steps. Omit to release all until next think.",
+});
+
+const FromScratchSchema = Type.Boolean({
+  description: "Discard retained execution state before running replacement plan.",
+});
+
+const DecisionSchema = Type.String({
+  enum: ["continue", "stop", "replace"],
+  description: "Checkpoint action. Omit for a new script.",
+});
+
+const ExecuteSchema = Type.Object(
+  {
+    script: Type.Optional(ScriptSchema),
+    decision: Type.Optional(DecisionSchema),
+    count: Type.Optional(CountSchema),
+    fromScratch: Type.Optional(FromScratchSchema),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Pass script for a new plan. At a checkpoint, pass continue, stop, or replace with its required fields.",
+  },
+);
+
+const StrictExecuteSchema = Type.Union([
   Type.Object({ script: ScriptSchema }, { additionalProperties: false }),
   Type.Object(
     {
       decision: Type.Literal("continue"),
-      count: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          description: "Release next N queued call steps. Omit to release all until next think.",
-        }),
-      ),
+      count: Type.Optional(CountSchema),
     },
     { additionalProperties: false },
   ),
@@ -47,15 +70,34 @@ const ExecuteSchema = Type.Union([
     {
       decision: Type.Literal("replace"),
       script: ScriptSchema,
-      fromScratch: Type.Optional(
-        Type.Boolean({
-          description: "Discard retained execution state before running replacement plan.",
-        }),
-      ),
+      fromScratch: Type.Optional(FromScratchSchema),
     },
     { additionalProperties: false },
   ),
 ]);
+
+const StrictProviderInputSchema = Type.Object(
+  {
+    script: Type.Optional(Type.Union([ScriptSchema, Type.Null()])),
+    decision: Type.Optional(Type.Union([DecisionSchema, Type.Null()])),
+    count: Type.Optional(Type.Union([CountSchema, Type.Null()])),
+    fromScratch: Type.Optional(Type.Union([FromScratchSchema, Type.Null()])),
+  },
+  { additionalProperties: false },
+);
+
+type StrictProviderInput = Static<typeof StrictProviderInputSchema>;
+type ExecuteInput = Static<typeof ExecuteSchema>;
+
+const normalizeStrictOptionalNulls = (input: StrictProviderInput): ExecuteInput => {
+  const normalized: ExecuteInput = {};
+  if (input.script !== null && input.script !== undefined) normalized.script = input.script;
+  if (input.decision !== null && input.decision !== undefined) normalized.decision = input.decision;
+  if (input.count !== null && input.count !== undefined) normalized.count = input.count;
+  if (input.fromScratch !== null && input.fromScratch !== undefined)
+    normalized.fromScratch = input.fromScratch;
+  return normalized;
+};
 
 const RunStateSchema = Type.Object(
   {
@@ -285,6 +327,9 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
     description: `${CALLSCRIPT_TOOL_DESCRIPTION}\n\n${runtime.languageCard()}`,
     parameters: ExecuteSchema,
     executionMode: "sequential",
+    prepareArguments(input) {
+      return normalizeStrictOptionalNulls(Value.Parse(StrictProviderInputSchema, input));
+    },
     async execute(toolCallId, input, signal, onUpdate, ctx) {
       const invocation = {
         id: toolCallId,
@@ -292,25 +337,26 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
         ctx,
         update: onUpdate,
       };
+      const parsed = Value.Parse(StrictExecuteSchema, input);
       const result = await Effect.runPromise(
-        "decision" in input
+        "decision" in parsed
           ? runtime.decide(
-              input.decision === "replace"
-                ? input.fromScratch === undefined
-                  ? { action: "replace", script: input.script }
+              parsed.decision === "replace"
+                ? parsed.fromScratch === undefined
+                  ? { action: "replace", script: parsed.script }
                   : {
                       action: "replace",
-                      script: input.script,
-                      fromScratch: input.fromScratch,
+                      script: parsed.script,
+                      fromScratch: parsed.fromScratch,
                     }
-                : input.decision === "continue"
-                  ? input.count === undefined
+                : parsed.decision === "continue"
+                  ? parsed.count === undefined
                     ? { action: "continue" }
-                    : { action: "continue", count: input.count }
+                    : { action: "continue", count: parsed.count }
                   : { action: "stop" },
               invocation,
             )
-          : runtime.execute(input.script, invocation),
+          : runtime.execute(parsed.script, invocation),
       );
       return {
         content: [{ type: "text", text: result.text }],

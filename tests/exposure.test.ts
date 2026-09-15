@@ -6,7 +6,9 @@ import type {
   ExtensionContext,
   ExtensionHandler,
   SessionStartEvent,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { Value } from "typebox/value";
 import { describe, expect, test } from "vitest";
 
 import callscriptExtension, { activeToolsForMode } from "../src/index.js";
@@ -15,6 +17,116 @@ import { STATE_ENTRY } from "../src/types.js";
 const initialTools = ["read", "fabric_exec", "fff_multi_grep"] as const;
 
 describe("CallScript additive exposure", () => {
+  test("registers a provider-compatible root object schema", async () => {
+    let parameters: unknown;
+    const host = {
+      registerTool(definition: { parameters: unknown }) {
+        parameters = definition.parameters;
+      },
+      registerCommand() {},
+      appendEntry() {},
+      on() {},
+      getActiveTools: () => [...initialTools],
+      getAllTools: () => [],
+      setActiveTools() {},
+    };
+    // SAFETY: extension initialization uses only host methods supplied above.
+    // @ts-expect-error Partial host is deliberate for schema integration test.
+    await callscriptExtension(host as ExtensionAPI);
+
+    expect(parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        script: { type: "string" },
+        decision: { type: "string", enum: ["continue", "stop", "replace"] },
+        count: { type: "integer", minimum: 1 },
+        fromScratch: { type: "boolean" },
+      },
+    });
+  });
+
+  test("normalizes strict-provider null placeholders", async () => {
+    let tool: ToolDefinition | undefined;
+    const host = {
+      registerTool(definition: ToolDefinition) {
+        tool = definition;
+      },
+      registerCommand() {},
+      appendEntry() {},
+      on() {},
+      getActiveTools: () => [...initialTools],
+      getAllTools: () => [],
+      setActiveTools() {},
+    };
+    // SAFETY: extension initialization uses only host methods supplied above.
+    // @ts-expect-error Partial host is deliberate for provider-input integration test.
+    await callscriptExtension(host as ExtensionAPI);
+    if (tool === undefined || tool.prepareArguments === undefined)
+      throw new Error("CallScript tool preparation was not registered");
+    const registeredTool = tool;
+    const prepareArguments = tool.prepareArguments;
+
+    const strictInputs = [
+      {
+        raw: { script: "return 1", decision: null, count: null, fromScratch: null },
+        expected: { script: "return 1" },
+      },
+      {
+        raw: { script: null, decision: "continue", count: 1, fromScratch: null },
+        expected: { decision: "continue", count: 1 },
+      },
+      {
+        raw: { script: null, decision: "stop", count: null, fromScratch: null },
+        expected: { decision: "stop" },
+      },
+      {
+        raw: {
+          script: "return 2",
+          decision: "replace",
+          count: null,
+          fromScratch: true,
+        },
+        expected: { script: "return 2", decision: "replace", fromScratch: true },
+      },
+    ];
+
+    for (const input of strictInputs) {
+      const prepared = prepareArguments(input.raw);
+      expect(prepared).toEqual(input.expected);
+      expect(() => Value.Parse(registeredTool.parameters, prepared)).not.toThrow();
+    }
+  });
+
+  test("rejects ambiguous invocation shapes before runtime dispatch", async () => {
+    let tool: ToolDefinition | undefined;
+    const host = {
+      registerTool(definition: ToolDefinition) {
+        tool = definition;
+      },
+      registerCommand() {},
+      appendEntry() {},
+      on() {},
+      getActiveTools: () => [...initialTools],
+      getAllTools: () => [],
+      setActiveTools() {},
+    };
+    // SAFETY: extension initialization uses only host methods supplied above.
+    // @ts-expect-error Partial host is deliberate for provider-input integration test.
+    await callscriptExtension(host as ExtensionAPI);
+    if (tool === undefined) throw new Error("CallScript tool was not registered");
+
+    // SAFETY: invalid input fails before execution reads any other context field.
+    const context = { cwd: process.cwd() } as ExtensionContext;
+    for (const raw of [{}, { script: "return 1", decision: "stop" }, { decision: "replace" }]) {
+      const prepared = tool.prepareArguments?.(raw) ?? raw;
+      const providerValid = Value.Parse(tool.parameters, prepared);
+      await expect(
+        tool.execute("invalid-input", providerValid, undefined, undefined, context),
+      ).rejects.toThrow();
+    }
+  });
+
   test("startup with persisted on adds one CallScript tool", async () => {
     let activeTools: string[] = [...initialTools];
     let sessionStart: ExtensionHandler<SessionStartEvent> | undefined;

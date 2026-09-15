@@ -144,6 +144,12 @@ for (const extension of ["./src/index.ts", "./dist/index.mjs"]) {
   if (!output.includes("CHECKPOINT_DECISION_DONE")) {
     throw new Error(`CallScript checkpoint did not complete with ${extension}`);
   }
+  if (!output.includes("Checkpoint stopped. Remaining queued calls were discarded.")) {
+    throw new Error(`CallScript strict-provider stop did not complete with ${extension}`);
+  }
+  if (!output.includes("STRICT_REPLACE_DONE")) {
+    throw new Error(`CallScript strict-provider replace did not complete with ${extension}`);
+  }
   if (
     (await fileExists(".pi/checkpoint-smoke-first.txt")) ||
     (await fileExists(".pi/checkpoint-smoke-second.txt"))

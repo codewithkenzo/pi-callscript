@@ -5,6 +5,13 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+
+const RootObjectSchema = Type.Object(
+  { type: Type.Literal("object") },
+  { additionalProperties: true },
+);
 
 const bridgeScript = `
 const extension = await pi({ tool: "smoke_extension", args: {} });
@@ -19,6 +26,16 @@ const first = write({ path: ".pi/checkpoint-smoke-first.txt", content: "first" }
 const second = await write({ path: ".pi/checkpoint-smoke-second.txt", content: "second" });
 await undo({ snapshot: saved.id });
 return "CHECKPOINT_DECISION_DONE";
+`;
+
+const stopCheckpointScript = `
+await think({ note: "stop smoke" });
+return "STOP_SMOKE_SHOULD_NOT_RUN";
+`;
+
+const replaceCheckpointScript = `
+await think({ note: "replace smoke" });
+return "REPLACE_SMOKE_SHOULD_NOT_RUN";
 `;
 
 export default function bridgeProvider(pi: ExtensionAPI): void {
@@ -38,18 +55,78 @@ export default function bridgeProvider(pi: ExtensionAPI): void {
     ],
   });
   faux.setResponses([
-    fauxAssistantMessage(fauxToolCall("callscript", { script: bridgeScript }), {
-      stopReason: "toolUse",
-    }),
-    fauxAssistantMessage(fauxToolCall("callscript", { script: checkpointScript }), {
-      stopReason: "toolUse",
-    }),
-    fauxAssistantMessage(fauxToolCall("callscript", { decision: "continue", count: 1 }), {
-      stopReason: "toolUse",
-    }),
-    fauxAssistantMessage(fauxToolCall("callscript", { decision: "continue" }), {
-      stopReason: "toolUse",
-    }),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: bridgeScript,
+        decision: null,
+        count: null,
+        fromScratch: null,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: checkpointScript,
+        decision: null,
+        count: null,
+        fromScratch: null,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: null,
+        decision: "continue",
+        count: 1,
+        fromScratch: null,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: null,
+        decision: "continue",
+        count: null,
+        fromScratch: null,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: stopCheckpointScript,
+        decision: null,
+        count: null,
+        fromScratch: null,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: null,
+        decision: "stop",
+        count: null,
+        fromScratch: null,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: replaceCheckpointScript,
+        decision: null,
+        count: null,
+        fromScratch: null,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("callscript", {
+        script: 'return "STRICT_REPLACE_DONE";',
+        decision: "replace",
+        count: null,
+        fromScratch: false,
+      }),
+      { stopReason: "toolUse" },
+    ),
     fauxAssistantMessage("CALLSCRIPT_BRIDGE_DONE"),
   ]);
 
@@ -69,6 +146,9 @@ export default function bridgeProvider(pi: ExtensionAPI): void {
       },
     ],
     streamSimple(model, context, options) {
+      const callscript = context.tools?.find((tool) => tool.name === "callscript");
+      if (callscript === undefined || !Value.Check(RootObjectSchema, callscript.parameters))
+        throw new Error("CallScript provider schema must have root type object");
       const inner = faux.streamSimple(model, context, options);
       const outer = createAssistantMessageEventStream();
       queueMicrotask(async () => {

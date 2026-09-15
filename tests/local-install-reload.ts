@@ -49,6 +49,7 @@ interface Result {
 
 const run = promisify(execFile);
 const operationTimeoutMs = 30_000;
+const packedInstallTimeoutMs = 60_000;
 const teardownTimeoutMs = 5_000;
 const root = resolve(import.meta.dirname, "..");
 const provider = join(root, "tests/fixtures/matrix-provider.ts");
@@ -110,7 +111,7 @@ async function installPacked(agentDir: string, tarball: string): Promise<void> {
   await run("npm", ["install", "--ignore-scripts", "--no-save", tarball], {
     cwd: npmRoot,
     env: safeEnv(agentDir),
-    timeout: operationTimeoutMs,
+    timeout: packedInstallTimeoutMs,
   });
   await writeFile(
     join(agentDir, "settings.json"),
@@ -381,7 +382,7 @@ const caseExpectations = {
     kind: "cold",
     loadCount: 1,
     sessionStartCount: 1,
-    beforePrompt: { include: ["fabric_exec"], exclude: ["callscript", "matrix_inert"] },
+    beforePrompt: { include: ["callscript"], exclude: ["matrix_inert"] },
   },
   "cold-local-package": {
     kind: "cold",
