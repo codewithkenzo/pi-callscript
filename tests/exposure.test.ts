@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 
 import callscriptExtension, { activeToolsForMode } from "../src/index.js";
 import { STATE_ENTRY } from "../src/types.js";
+import type { PiToolContext } from "../src/types.js";
 
 const initialTools = ["read", "fabric_exec", "fff_multi_grep"] as const;
 
@@ -117,7 +118,7 @@ describe("CallScript additive exposure", () => {
     if (tool === undefined) throw new Error("CallScript tool was not registered");
 
     // SAFETY: invalid input fails before execution reads any other context field.
-    const context = { cwd: process.cwd() } as ExtensionContext;
+    const context = { cwd: process.cwd() } as PiToolContext;
     for (const raw of [{}, { script: "return 1", decision: "stop" }, { decision: "replace" }]) {
       const prepared = tool.prepareArguments?.(raw) ?? raw;
       const providerValid = Value.Parse(tool.parameters, prepared);

@@ -1,21 +1,21 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import {
-  AgentSession,
-  type AgentToolResult,
-  type AgentToolUpdateCallback,
-  type ExtensionAPI,
-  type ExtensionContext,
-  type ToolCallEventResult,
-  type ToolDefinition,
-  type ToolInfo,
+import type {
+  AgentToolResult,
+  AgentToolUpdateCallback,
+  ExtensionAPI,
+  ToolCallEventResult,
+  ToolDefinition,
+  ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+
+import type { PiToolContext } from "./types.js";
 import { Value } from "typebox/value";
 
 const BRIDGE_STATE_KEY = Symbol.for("pi-callscript.pi-tool-bridge.v1");
 
-type HostKind = "bundled" | "unbundled" | "unsupported";
+type HostKind = "native" | "bundled" | "unbundled" | "unsupported";
 
 const ToolInputSchema = Type.Record(Type.String(), Type.Unknown());
 type ToolInput = Static<typeof ToolInputSchema>;
@@ -60,6 +60,25 @@ interface SessionModule {
   AgentSession: SessionConstructor;
 }
 
+interface NativeToolOutcome {
+  result: AgentToolResult<unknown>;
+  isError: boolean;
+}
+
+interface NativeToolContext {
+  tools?: readonly { readonly name: string }[];
+  executeTool?: (
+    name: string,
+    args: ToolInput,
+    options?: {
+      signal?: AbortSignal | undefined;
+      onUpdate?: AgentToolUpdateCallback<unknown> | undefined;
+    },
+  ) => Promise<NativeToolOutcome>;
+}
+
+type ModuleResolver = (specifier: string) => string | undefined;
+
 interface CaptureRequest {
   capture(session: SessionLike): void;
 }
@@ -76,9 +95,9 @@ export interface PiToolProvider {
     raw: ToolInput,
     signal: AbortSignal | undefined,
     onUpdate: AgentToolUpdateCallback<unknown>,
-    ctx: ExtensionContext,
+    ctx: PiToolContext,
   ): Promise<AgentToolResult<unknown>>;
-  tools(): readonly ToolInfo[];
+  tools(ctx?: PiToolContext): readonly ToolInfo[];
   status(): PiToolBridgeStatus;
 }
 
@@ -133,43 +152,59 @@ const patchSession = (constructor: SessionConstructor, state: SharedBridgeState)
   state.patched.add(prototype);
 };
 
-const bundledSession = async () => {
-  const packageEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
-  const bundledEntry = new URL("./bundle/index.js", packageEntry);
+const resolveModule: ModuleResolver = (specifier) => {
   try {
-    // SAFETY: Pi npm package emits bundle/index.js beside its public dist/index.js entry.
-    const loaded = (await import(bundledEntry.href)) as SessionModule;
-    return loaded.AgentSession;
+    return import.meta.resolve(specifier);
   } catch {
     return undefined;
   }
 };
 
-export class PiToolBridge {
-  readonly #state: SharedBridgeState;
-  readonly #unbundledPrototype: object;
-  readonly #bundledPrototype: object | undefined;
-  #session: SessionLike | undefined;
-  #metadata: readonly ToolInfo[] = [];
-  #reason = "Pi session is not captured";
+const legacySessions = async (resolve: ModuleResolver) => {
+  const packageEntry = resolve("@earendil-works/pi-coding-agent");
+  if (packageEntry === undefined) return [];
 
-  private constructor(
-    state: SharedBridgeState,
-    unbundled: SessionConstructor,
-    bundled: SessionConstructor | undefined,
-  ) {
-    this.#state = state;
-    this.#unbundledPrototype = unbundled.prototype;
-    this.#bundledPrototype = bundled?.prototype;
+  let unbundled: SessionConstructor | undefined;
+  try {
+    // SAFETY: Pi's public package entry exports AgentSession; patchSession checks its required method.
+    const loaded = (await import(packageEntry)) as SessionModule;
+    unbundled = loaded.AgentSession;
+  } catch {
+    // Older Pi hosts may not expose an importable package entry.
   }
 
-  static async create() {
+  let bundled: SessionConstructor | undefined;
+  try {
+    // SAFETY: Pi npm package emits bundle/index.js beside its public dist/index.js entry.
+    const loaded = (await import(new URL("./bundle/index.js", packageEntry).href)) as SessionModule;
+    bundled = loaded.AgentSession;
+  } catch {
+    // Standalone binaries may not provide a separately importable bundle entry.
+  }
+
+  return [unbundled, bundled].filter(
+    (session): session is SessionConstructor => session !== undefined,
+  );
+};
+
+export class PiToolBridge {
+  readonly #state: SharedBridgeState;
+  readonly #legacyPrototypes: readonly object[];
+  #nativeHost = false;
+  #session: SessionLike | undefined;
+  #metadata: readonly ToolInfo[] = [];
+  #reason = "Pi tool execution API is unavailable";
+
+  private constructor(state: SharedBridgeState, sessions: readonly SessionConstructor[]) {
+    this.#state = state;
+    this.#legacyPrototypes = sessions.map((session) => session.prototype);
+  }
+
+  static async create(options: { resolveModule?: ModuleResolver } = {}) {
     const state = sharedState();
-    const unbundled: SessionConstructor = AgentSession;
-    const bundled = await bundledSession();
-    patchSession(unbundled, state);
-    if (bundled !== undefined) patchSession(bundled, state);
-    return new PiToolBridge(state, unbundled, bundled);
+    const sessions = await legacySessions(options.resolveModule ?? resolveModule);
+    for (const session of sessions) patchSession(session, state);
+    return new PiToolBridge(state, sessions);
   }
 
   capture(pi: Pick<ExtensionAPI, "getAllTools">) {
@@ -183,10 +218,12 @@ export class PiToolBridge {
       () => pi.getAllTools(),
     );
     this.#metadata = metadata;
+    this.#nativeHost = metadata.some((entry) => "exposure" in entry);
     const runner = captured === undefined ? undefined : policyRunner(captured);
     this.#session = runner === undefined ? undefined : captured;
-    this.#reason =
-      captured === undefined
+    this.#reason = this.#nativeHost
+      ? "Pi native nested-tool API is unavailable in this tool context"
+      : captured === undefined
         ? "Current Pi host does not expose an importable shared AgentSession"
         : runner === undefined
           ? "Current Pi host does not expose its policy runner"
@@ -200,8 +237,27 @@ export class PiToolBridge {
     raw: ToolInput,
     signal: AbortSignal | undefined,
     onUpdate: AgentToolUpdateCallback<unknown>,
-    ctx: ExtensionContext,
+    ctx: PiToolContext,
   ) {
+    // SAFETY: the native API is present on Pi 1.0's tool context; older contexts omit it.
+    const nativeContext = ctx as PiToolContext & NativeToolContext;
+    if (nativeContext.executeTool !== undefined) {
+      if (
+        nativeContext.tools !== undefined &&
+        !nativeContext.tools.some((tool) => tool.name === name)
+      ) {
+        throw new Error(`Pi tool is not callable in this context: ${name}`);
+      }
+      const nativeOutcome = await nativeContext.executeTool(name, raw, { signal, onUpdate });
+      if (nativeOutcome.isError) {
+        const message = nativeOutcome.result.content
+          .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
+          .join("\n");
+        throw new Error(message || `Pi tool ${name} failed`);
+      }
+      return nativeOutcome.result;
+    }
+
     const session = this.#session;
     if (session === undefined) throw new Error(this.#reason);
     const runner = policyRunner(session);
@@ -260,12 +316,19 @@ export class PiToolBridge {
     return this.#session?.getToolDefinition(name);
   }
 
-  tools() {
-    if (this.#session !== undefined) this.#metadata = this.#session.getAllTools();
-    return this.#metadata;
+  tools(ctx?: PiToolContext) {
+    const metadata = this.#session?.getAllTools() ?? this.#metadata;
+    // SAFETY: Pi 1.0 contexts expose callable tools; older host contexts may omit the field.
+    const callableTools =
+      ctx === undefined ? undefined : (ctx as PiToolContext & NativeToolContext).tools;
+    if (callableTools === undefined) return metadata;
+    return metadata.filter((entry) => callableTools.some((tool) => tool.name === entry.name));
   }
 
   status(): PiToolBridgeStatus {
+    if (this.#nativeHost) {
+      return { available: true, host: "native", tools: this.#metadata.length };
+    }
     if (this.#session === undefined) {
       return {
         available: false,
@@ -275,12 +338,15 @@ export class PiToolBridge {
       };
     }
     const prototype = Object.getPrototypeOf(this.#session);
+    const prototypeIndex = this.#legacyPrototypes.indexOf(prototype);
     const host: HostKind =
-      prototype === this.#bundledPrototype
+      prototypeIndex === this.#legacyPrototypes.length - 1 && this.#legacyPrototypes.length > 1
         ? "bundled"
-        : prototype === this.#unbundledPrototype
+        : prototypeIndex >= 0
           ? "unbundled"
-          : "unsupported";
+          : this.#nativeHost
+            ? "native"
+            : "unsupported";
     return {
       available: host !== "unsupported",
       host,

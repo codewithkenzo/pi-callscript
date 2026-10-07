@@ -7,7 +7,7 @@
 [![Pi package](https://img.shields.io/badge/Pi-package-6f5cff?style=flat-square)](https://pi.dev/packages/pi-callscript)
 [![npm](https://img.shields.io/npm/v/pi-callscript?style=flat-square)](https://www.npmjs.com/package/pi-callscript)
 [![Bun](https://img.shields.io/badge/Bun-1.4-fbf0df?style=flat-square&logo=bun&logoColor=000)](https://bun.com/)
-[![Effect](https://img.shields.io/badge/Effect-v4_RC-8a2be2?style=flat-square)](https://effect.website/)
+[![Effect](https://img.shields.io/badge/Effect-v4-8a2be2?style=flat-square)](https://effect.website/)
 
 `pi-callscript` lets Pi run several tool calls as one checked script. It supports parallel work, dependencies, decision checkpoints, background jobs, and file rollback.
 
@@ -100,7 +100,7 @@ File and shell calls use the current Pi working directory. `run` uses PowerShell
 
 ## Compatibility
 
-Registered Pi tool access works with npm and Node.js Pi. CI tests the locked Pi version and npm `latest` on Linux, macOS, and Windows.
+Supports Pi 0.84.4 and Pi 1.x starting at 1.0.2. Pi 1.0 uses native nested-tool execution; Pi 0.84.4 uses the optional legacy bridge. Compatibility CI checks locked, legacy, and latest Pi packages. The latest-Pi matrix runs weekly and on manual dispatch; core checks run on Linux, macOS, and Windows.
 
 A standalone compiled Pi binary cannot expose its tool registry to this extension. Fixed CallScript tools still work, and `/callscript status` reports that the Pi bridge is unavailable.
 

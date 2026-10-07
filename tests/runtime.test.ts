@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter, once } from "node:events";
 
-import type { ExtensionContext, ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -47,11 +47,11 @@ const config: ExtensionConfig = {
   maxHttpResultBytes: 5_242_880,
 };
 
-const context = (cwd: string): ExtensionContext => {
+const context = (cwd: string): InvocationInput["ctx"] => {
   const empty = Object.create(null);
-  return {
+  const ctx = {
     ui: empty,
-    mode: "json",
+    mode: "json" as const,
     hasUI: false,
     cwd,
     sessionManager: empty,
@@ -67,7 +67,12 @@ const context = (cwd: string): ExtensionContext => {
     getContextUsage: () => undefined,
     compact: () => undefined,
     getSystemPrompt: () => "",
+    tools: [],
+    executeTool: async () => {
+      throw new Error("Nested tool calls are unused in runtime tests");
+    },
   };
+  return ctx;
 };
 
 const invocation = (
@@ -951,17 +956,19 @@ const providerFor = (definitions: readonly ToolDefinition[]): PiToolProvider => 
   },
   tools(): ToolInfo[] {
     return definitions.map((entry) => {
-      const info: ToolInfo = {
+      // SAFETY: current Pi requires exposure; legacy Pi accepts this added metadata field.
+      const info = {
         name: entry.name,
         description: entry.description,
         parameters: entry.parameters,
+        exposure: "direct",
         sourceInfo: {
           path: `tests/${entry.name}.ts`,
           source: "tests",
           scope: "temporary",
           origin: "top-level",
         },
-      };
+      } as ToolInfo;
       if (entry.promptGuidelines !== undefined) info.promptGuidelines = entry.promptGuidelines;
       return info;
     });

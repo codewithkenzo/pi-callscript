@@ -1,21 +1,18 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
-  isAwaitCall,
+  callscript,
   isCallStep,
-  previewValue,
   publishedVariables,
-  scriptEngine,
   stableStringify,
   type AnyScriptTool,
   type ExecuteResult,
   type JsonValue,
+  type RunInput,
   type RunState,
   type Script,
   type ScriptEngine,
-  type ScriptScope,
   type SessionRunner,
-  type StartResult,
 } from "callscript";
 import { Chunk, Effect, Fiber, Ref, Schema } from "effect";
 
@@ -51,6 +48,21 @@ export interface ExecutionResult {
 type RunOutcome =
   | { kind: "run"; result: ExecuteResult; plan: Script }
   | { kind: "session"; result: StartResult; plan: Script };
+
+interface RuntimeScope {
+  state?: RunState;
+  vars: Record<string, JsonValue>;
+}
+
+type StartResult = Awaited<ReturnType<SessionRunner["start"]>>;
+
+const isAwaitCall = (call: string) => call.startsWith("await.");
+type SessionDigestEntry = ReturnType<SessionRunner["digest"]>[string];
+type PreviewValue = SessionDigestEntry["output"] | SessionDigestEntry["error"];
+const previewValue = (value: PreviewValue, maximum: number) => {
+  const text = stableStringify(value);
+  return text.length <= maximum ? text : `${text.slice(0, maximum - 1)}…`;
+};
 
 interface PendingCheckpoint {
   readonly plan: Script;
@@ -321,7 +333,7 @@ const completedSessionResult = (
 export class CallScriptRuntime {
   readonly tools: readonly AnyScriptTool[];
   readonly engine: ScriptEngine<readonly AnyScriptTool[]>;
-  readonly scope: ScriptScope;
+  readonly scope: RuntimeScope;
   readonly #config: ExtensionConfig;
   readonly #snapshots: SnapshotStore;
   readonly #validationTools: readonly string[];
@@ -344,26 +356,23 @@ export class CallScriptRuntime {
     this.#onJobSettled = onJobSettled;
     this.#snapshots = new SnapshotStore(cwd);
     this.tools = createCapabilities(cwd, config, () => this.invocation(), this.#snapshots, piTools);
-    this.engine = scriptEngine({
+    this.engine = callscript({
       tools: this.tools,
       format: "js",
       limits: config.limits,
     });
-    this.scope = this.engine.scope();
-    this.#validationTools = [...this.engine.tools, "await.*"];
+    this.scope = { vars: {} };
+    this.#validationTools = [...this.engine.toolNames, "await.*"];
     this.#session = this.createSession();
   }
 
   private createSession() {
-    const session = this.engine.session(
-      {
-        deadlineMs: 0,
-        maxRuns: 64,
-        maxDigestOutputBytes: 4_096,
-        retainOutputs: "live",
-      },
-      this.scope,
-    );
+    const session = this.engine.session({
+      deadlineMs: 0,
+      maxRuns: 64,
+      maxDigestOutputBytes: 4_096,
+      retainOutputs: "live",
+    });
     this.#unsubscribeSession = session.onRunSettled((run) => {
       this.#backgroundAbort.delete(run.runId);
       const previous = this.#jobs.get(run.runId);
@@ -500,7 +509,7 @@ export class CallScriptRuntime {
         this.#jobs.clear();
         delete this.scope.state;
         this.#checkpoint = undefined;
-        this.scope.memo.clear();
+        this.scope.vars = {};
         this.#session = this.createSession();
       });
       yield* this.#snapshots.clear();
@@ -595,7 +604,7 @@ export class CallScriptRuntime {
       this.#checkpoint = undefined;
       if (decision.fromScratch === true) {
         delete this.scope.state;
-        this.scope.memo.clear();
+        this.scope.vars = {};
         this.#unsubscribeSession();
         this.#session = this.createSession();
       }
@@ -729,12 +738,17 @@ export class CallScriptRuntime {
         }
         return Effect.tryPromise({
           try: () =>
-            this.#invocations.run(invocation, () =>
-              this.engine.run(
-                { script: plan, retainOutputs: control.retain === undefined ? "live" : "all" },
-                this.scope,
-              ),
-            ),
+            this.#invocations.run(invocation, async () => {
+              const runInput: RunInput = {
+                script: plan,
+                variables: this.scope.vars,
+                retainOutputs: control.retain === undefined ? "live" : "all",
+              };
+              if (this.scope.state !== undefined) runInput.state = this.scope.state;
+              const result = await this.engine.run(runInput);
+              this.scope.state = result.state;
+              return result;
+            }),
           catch: RuntimeDefect.from,
         }).pipe(Effect.map((result): RunOutcome => ({ kind: "run", result, plan })));
       };

@@ -1,8 +1,12 @@
-import type { AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { RunDigestEntry, RunState } from "callscript";
+import type { AgentToolUpdateCallback, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { RunState, SessionRunner } from "callscript";
 import type { Chunk, Ref } from "effect";
 
 import type { ActivityPresentation, OperationPresentationDetails } from "./presentation.js";
+
+export type PiToolContext = Parameters<ToolDefinition["execute"]>[4];
+
+type RunDigestEntry = ReturnType<SessionRunner["digest"]>[string];
 
 export const MODES = ["off", "on"] as const;
 export type Mode = (typeof MODES)[number];
@@ -99,7 +103,7 @@ export interface ActivityState {
 export interface Invocation {
   id: string;
   signal: AbortSignal | undefined;
-  ctx: ExtensionContext;
+  ctx: PiToolContext;
   update: AgentToolUpdateCallback<RunDetails> | undefined;
   activity: Ref.Ref<ActivityState>;
   lastUpdateAt: Ref.Ref<number>;

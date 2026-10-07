@@ -13,6 +13,9 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join, relative as relativePath, resolve } from "node:path";
 
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+
 interface ProbeEvent {
   event: string;
   aborted?: boolean;
@@ -57,6 +60,18 @@ const reloadDriver = join(root, "tests/fixtures/matrix-reload.ts");
 const inert = join(root, "tests/fixtures/matrix-inert.ts");
 const source = join(root, "src/index.ts");
 const dist = join(root, "dist/index.mjs");
+
+const PiManifestSchema = Type.Object({ version: Type.String() }, { additionalProperties: true });
+const PiUserSettingsSchema = Type.Object({
+  packages: Type.Optional(Type.Array(Type.Unknown())),
+});
+const PackageSourceSchema = Type.String();
+
+async function readPiVersion(): Promise<string> {
+  const manifestPath = join(root, "node_modules/@earendil-works/pi-coding-agent/package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  return Value.Parse(PiManifestSchema, manifest).version;
+}
 
 async function makeAgentDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pi-callscript-matrix-"));
@@ -115,7 +130,7 @@ async function installPacked(agentDir: string, tarball: string): Promise<void> {
   });
   await writeFile(
     join(agentDir, "settings.json"),
-    JSON.stringify({ packages: ["npm:pi-callscript@0.3.1"] }),
+    JSON.stringify({ packages: ["npm:pi-callscript@0.3.2"] }),
   );
 }
 
@@ -156,24 +171,29 @@ async function assertSafeCopySources(sources: string[]): Promise<void> {
 
 async function copyUserExtensions(agentDir: string): Promise<void> {
   const real = join(process.env.HOME ?? "", ".pi/agent");
-  const settings: { packages?: string[] } = JSON.parse(
-    await readFile(join(real, "settings.json"), "utf8"),
+  const settings = Value.Parse(
+    PiUserSettingsSchema,
+    JSON.parse(await readFile(join(real, "settings.json"), "utf8")),
   );
   const userPackages = (settings.packages ?? []).filter(
-    (packageSource) =>
-      packageSource !== root &&
-      !packageSource.endsWith("/pi-callscript") &&
-      packageSource !== "npm:pi-callscript" &&
-      !packageSource.startsWith("npm:pi-callscript@") &&
-      !packageSource.includes("github.com/codewithkenzo/pi-callscript"),
+    (packageSource): packageSource is string => {
+      if (!Value.Check(PackageSourceSchema, packageSource)) return false;
+      return (
+        packageSource !== root &&
+        !packageSource.endsWith("/pi-callscript") &&
+        packageSource !== "npm:pi-callscript" &&
+        !packageSource.startsWith("npm:pi-callscript@") &&
+        !packageSource.includes("github.com/codewithkenzo/pi-callscript")
+      );
+    },
   );
   const localPackages = userPackages
     .filter((packageSource) => packageSource.startsWith(".") || packageSource.startsWith("/"))
     .map((packageSource) => resolve(real, packageSource));
-  const copySources = [
-    ...localPackages,
-    ...["npm", "git", "extensions"].map((name) => join(real, name)),
-  ];
+  const resourceNames = (await readdir(real, { withFileTypes: true }))
+    .filter((entry) => ["npm", "git", "extensions"].includes(entry.name))
+    .map((entry) => entry.name);
+  const copySources = [...localPackages, ...resourceNames.map((name) => join(real, name))];
   await assertSafeCopySources(copySources);
   const copiedPackages: string[] = [];
   for (const [index, packageSource] of userPackages.entries()) {
@@ -194,7 +214,7 @@ async function copyUserExtensions(agentDir: string): Promise<void> {
     copiedPackages.push(join(destination, packageSource.split("/").at(-1) ?? "package"));
   }
   await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: copiedPackages }));
-  for (const name of ["npm", "git", "extensions"]) {
+  for (const name of resourceNames) {
     await run(
       "cp",
       ["--archive", "--dereference", "--reflink=auto", join(real, name), join(agentDir, name)],
@@ -204,15 +224,16 @@ async function copyUserExtensions(agentDir: string): Promise<void> {
       },
     );
   }
-  await run(
-    "chmod",
-    [
-      "-R",
-      "a-w",
-      ...["npm", "git", "extensions", "local-resources"].map((name) => join(agentDir, name)),
-    ],
-    { env: safeEnv(agentDir), timeout: operationTimeoutMs },
-  );
+  const protectedPaths = [
+    ...resourceNames.map((name) => join(agentDir, name)),
+    ...(localPackages.length > 0 ? [join(agentDir, "local-resources")] : []),
+  ];
+  if (protectedPaths.length > 0) {
+    await run("chmod", ["-R", "a-w", ...protectedPaths], {
+      env: safeEnv(agentDir),
+      timeout: operationTimeoutMs,
+    });
+  }
 }
 
 async function bounded<T>(promise: Promise<T>, label: string, timeoutMs: number): Promise<T> {
@@ -607,7 +628,8 @@ try {
   results.push(await reload("reload-local-package", async (dir) => install(dir, root)));
   results.push(await reload("reload-packed-package", async (dir) => installPacked(dir, tarball)));
   results.push(await reload("reload-inert-control", async (dir) => install(dir, inert)));
-  process.stdout.write(`${JSON.stringify({ piVersion: "0.84.4", results }, null, 2)}\n`);
+  const piVersion = await readPiVersion();
+  process.stdout.write(`${JSON.stringify({ piVersion, results }, null, 2)}\n`);
   const failed = results.find((result) => !result.passed);
   if (failed) throw new Error(`First failing boundary: ${failed.name}`);
 } finally {

@@ -146,7 +146,7 @@ export default function bridgeProvider(pi: ExtensionAPI): void {
       },
     ],
     streamSimple(model, context, options) {
-      const callscript = context.tools?.find((tool) => tool.name === "callscript");
+      const callscript = pi.getAllTools().find((tool) => tool.name === "callscript");
       if (callscript === undefined || !Value.Check(RootObjectSchema, callscript.parameters))
         throw new Error("CallScript provider schema must have root type object");
       const inner = faux.streamSimple(model, context, options);

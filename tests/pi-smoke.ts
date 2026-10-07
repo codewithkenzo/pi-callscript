@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
 
 import { CallScriptRuntime } from "../src/runtime.js";
@@ -20,11 +19,11 @@ const config: ExtensionConfig = {
   maxHttpResultBytes: 5_242_880,
 };
 
-const context = (): ExtensionContext => {
+const context = (): InvocationInput["ctx"] => {
   const empty = Object.create(null);
-  return {
+  const ctx = {
     ui: empty,
-    mode: "rpc",
+    mode: "rpc" as const,
     hasUI: false,
     cwd: process.cwd(),
     sessionManager: empty,
@@ -40,7 +39,12 @@ const context = (): ExtensionContext => {
     getContextUsage: () => undefined,
     compact: () => undefined,
     getSystemPrompt: () => "",
+    tools: [],
+    executeTool: async () => {
+      throw new Error("Nested tool calls are unused in runtime smoke setup");
+    },
   };
+  return ctx;
 };
 
 const fileExists = async (path: string) => {
@@ -112,7 +116,7 @@ const launch = (extension: string) =>
     child.once("error", reject);
     child.once("close", (exitCode) => resolve({ output, exitCode }));
     child.stdin.write(
-      `{"type":"get_commands"}\n{"type":"prompt","message":"/smoke-probe"}\n{"type":"prompt","message":"run bridge smoke"}\n`,
+      `{"type":"get_commands"}\n{"type":"prompt","message":"/callscript status"}\n{"type":"prompt","message":"/smoke-probe"}\n{"type":"prompt","message":"run bridge smoke"}\n`,
     );
   });
 
@@ -122,6 +126,9 @@ for (const extension of ["./src/index.ts", "./dist/index.mjs"]) {
   if (exitCode !== 0) throw new Error(`Pi RPC exited with ${exitCode} for ${extension}`);
   if (!output.includes('"name":"callscript"')) {
     throw new Error(`CallScript command was not registered from ${extension}`);
+  }
+  if (!output.includes("CallScript is on and additive") || !output.includes("Pi tools via")) {
+    throw new Error(`CallScript status command failed with ${extension}`);
   }
   if (!output.includes("SMOKE_EXTENSION_CALLED")) {
     throw new Error(`Representative extension command did not execute with ${extension}`);
@@ -160,7 +167,8 @@ for (const extension of ["./src/index.ts", "./dist/index.mjs"]) {
     throw new Error(`Bridge provider did not complete with ${extension}`);
   }
   const activeMarker = output.match(/SMOKE_ACTIVE_TOOLS:([^"\n]+)/u)?.[1] ?? "";
-  for (const tool of ["read", "callscript", "fabric_exec", "smoke_extension"]) {
+  // Built-in read execution is verified above; Pi 0.84.4 omits it from active-tool metadata.
+  for (const tool of ["callscript", "fabric_exec", "smoke_extension"]) {
     if (!activeMarker.split(",").includes(tool)) {
       throw new Error(`Active tools omit ${tool} with ${extension}: ${activeMarker}`);
     }

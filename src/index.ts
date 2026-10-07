@@ -283,10 +283,10 @@ const resultText = (result: { content: Array<{ type: string; text?: string }> })
 };
 
 export const CALLSCRIPT_TOOL_DESCRIPTION =
-  "Execute one bounded, inert JavaScript-shaped plan over fixed capabilities and registered Pi tools through pi({ tool, args }).";
+  "Execute one bounded, inert JavaScript-shaped plan over fixed capabilities and Pi tools callable from the current context through pi({ tool, args }).";
 
 export const CALLSCRIPT_MODE_PROMPT =
-  'CallScript is available beside other Pi tools. Use fixed capabilities directly. Discover registered Pi tools with tools({ query }) and invoke them through pi({ tool, args }). Work in short evidence-driven phases: parallelize independent fixed calls and await dependencies. Bridged Pi calls serialize and are never repeat-safe. think creates a decision checkpoint. After reasoning, call callscript with { decision: "continue" }, { decision: "continue", count: N }, { decision: "stop" }, or { decision: "replace", script, fromScratch? }. Do not resubmit an initial script while a checkpoint is pending. Use snapshot before changes that may need undo.';
+  'CallScript is available beside other Pi tools. Use fixed capabilities directly. Discover callable Pi tools with tools({ query }) and invoke them through pi({ tool, args }). Work in short evidence-driven phases: parallelize independent fixed calls and await dependencies. Bridged Pi calls serialize and are never repeat-safe. think creates a decision checkpoint. After reasoning, call callscript with { decision: "continue" }, { decision: "continue", count: N }, { decision: "stop" }, or { decision: "replace", script, fromScratch? }. Do not resubmit an initial script while a checkpoint is pending. Use snapshot before changes that may need undo.';
 
 export const activeToolsForMode = (mode: Mode, currentTools: readonly string[]) => {
   if (mode === "off") return currentTools.filter((name) => name !== MAIN_TOOL);
@@ -417,7 +417,7 @@ export default async function callscriptExtension(pi: ExtensionAPI) {
       }
       if (command === "help") {
         ctx.ui.notify(
-          "Usage: /callscript [on|off|status|jobs|help|doctor|reload|reset]. Use fixed capabilities directly. Use tools({ query }) plus pi({ tool, args }) for registered Pi tools.",
+          "Usage: /callscript [on|off|status|jobs|help|doctor|reload|reset]. Use fixed capabilities directly. Use tools({ query }) plus pi({ tool, args }) for Pi tools callable from this context.",
           "info",
         );
         return;

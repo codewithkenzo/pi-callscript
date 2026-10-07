@@ -853,7 +853,7 @@ export const createCapabilities = (
     tool({
       name: "pi",
       description:
-        "Invoke any registered Pi tool except callscript. Pass the exact Pi tool name and its argument object.",
+        "Invoke a Pi tool callable from this context, except callscript. Use exact name and argument object.",
       inputSchema: jsonSchema(PiSchema),
       execute(raw: Static<typeof PiSchema>, call) {
         const program = Effect.try({
@@ -894,7 +894,7 @@ export const createCapabilities = (
     tool({
       name: "tools",
       description:
-        "Inspect fixed CallScript capabilities and registered Pi tools. Pi entries include exact argument schemas.",
+        "Inspect fixed CallScript capabilities and Pi tools callable from this context. Pi entries include exact argument schemas.",
       inputSchema: jsonSchema(ToolsSchema),
       execute(raw: Static<typeof ToolsSchema>, call) {
         const program = Effect.try({
@@ -902,41 +902,49 @@ export const createCapabilities = (
           catch: (cause) => ToolInvocationFailure.from("tools", cause),
         }).pipe(
           Effect.flatMap((args) =>
-            withActivity(source, call, { target: args.query ?? "all fixed capabilities" }, () => {
-              const query = args.query?.toLowerCase();
-              const names =
-                query === undefined
-                  ? [...FIXED_CAPABILITY_NAMES]
-                  : FIXED_CAPABILITY_NAMES.filter((name) => name.includes(query));
-              const registered = (piTools?.tools() ?? [])
-                .filter((entry) => entry.name !== "callscript")
-                .filter(
-                  (entry) =>
-                    query === undefined ||
-                    entry.name.toLowerCase().includes(query) ||
-                    entry.description.toLowerCase().includes(query),
-                )
-                .map((entry) => ({
-                  name: entry.name,
-                  description: entry.description,
-                  parameters: entry.parameters,
-                  source: entry.sourceInfo,
-                }));
-              return Effect.succeed({
-                value: {
-                  fixed: true,
-                  names,
-                  pi: registered,
-                  bridge: piTools?.status() ?? {
-                    available: false,
-                    host: "unsupported",
-                    reason: "Pi tool bridge is not configured",
-                    tools: 0,
+            withActivity(
+              source,
+              call,
+              { target: args.query ?? "all fixed capabilities" },
+              (active) => {
+                const query = args.query?.toLowerCase();
+                const names =
+                  query === undefined
+                    ? [...FIXED_CAPABILITY_NAMES]
+                    : FIXED_CAPABILITY_NAMES.filter((name) => name.includes(query));
+                const callable = (piTools?.tools(active.ctx) ?? []).flatMap((entry) => {
+                  if (entry.name === "callscript") return [];
+                  if (
+                    query !== undefined &&
+                    !entry.name.toLowerCase().includes(query) &&
+                    !entry.description.toLowerCase().includes(query)
+                  )
+                    return [];
+                  return [
+                    {
+                      name: entry.name,
+                      description: entry.description,
+                      parameters: entry.parameters,
+                      source: entry.sourceInfo,
+                    },
+                  ];
+                });
+                return Effect.succeed({
+                  value: {
+                    fixed: true,
+                    names,
+                    pi: callable,
+                    bridge: piTools?.status() ?? {
+                      available: false,
+                      host: "unsupported",
+                      reason: "Pi tool bridge is not configured",
+                      tools: 0,
+                    },
                   },
-                },
-                summary: `${names.length} fixed · ${registered.length} Pi tools`,
-              });
-            }),
+                  summary: `${names.length} fixed · ${callable.length} Pi tools`,
+                });
+              },
+            ),
           ),
         );
         return Effect.runPromise(program);

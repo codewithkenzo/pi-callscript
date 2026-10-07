@@ -2,7 +2,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -33,29 +32,34 @@ const workspace = async () => {
 
 const invocation = (cwd: string): InvocationInput => {
   const empty = Object.create(null);
+  const ctx = {
+    ui: empty,
+    mode: "json" as const,
+    hasUI: false,
+    cwd,
+    sessionManager: empty,
+    modelRegistry: empty,
+    model: undefined,
+    scopedModels: [],
+    isIdle: () => true,
+    isProjectTrusted: () => true,
+    signal: undefined,
+    abort: () => undefined,
+    hasPendingMessages: () => false,
+    shutdown: () => undefined,
+    getContextUsage: () => undefined,
+    compact: () => undefined,
+    getSystemPrompt: () => "",
+    tools: [],
+    executeTool: async () => {
+      throw new Error("Nested tool calls are unused in language tests");
+    },
+  };
   return {
     id: "language-test",
     signal: undefined,
     update: undefined,
-    ctx: {
-      ui: empty,
-      mode: "json",
-      hasUI: false,
-      cwd,
-      sessionManager: empty,
-      modelRegistry: empty,
-      model: undefined,
-      scopedModels: [],
-      isIdle: () => true,
-      isProjectTrusted: () => true,
-      signal: undefined,
-      abort: () => undefined,
-      hasPendingMessages: () => false,
-      shutdown: () => undefined,
-      getContextUsage: () => undefined,
-      compact: () => undefined,
-      getSystemPrompt: () => "",
-    } satisfies ExtensionContext,
+    ctx,
   };
 };
 
@@ -77,7 +81,7 @@ describe("stable CallScript language card", () => {
     expect(first).toContain("try/catch recovery");
     expect(first).toContain("tagged templates");
     expect(first).toContain("per-call .catch");
-    expect(first).toContain('invoke with pi({ tool: "exact_name", args: { ... } })');
+    expect(first).toContain("invoke those exact names with pi({ tool, args })");
     expect(first).not.toContain(firstCwd);
     expect(first).not.toContain(secondCwd);
     expect(CALLSCRIPT_MODE_PROMPT).not.toMatch(/timestamp|counter|progress/i);

@@ -1,13 +1,9 @@
-import {
-  AgentSession,
-  type ExtensionContext,
-  type ToolDefinition,
-  type ToolInfo,
-} from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ToolDefinition, type ToolInfo } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { describe, expect, test } from "vitest";
 
 import { PiToolBridge } from "../src/pi-tool-bridge.js";
+import type { PiToolContext } from "../src/types.js";
 
 const sourceInfo = {
   path: "tests/fixture-extension.ts",
@@ -70,6 +66,9 @@ const permissivePolicy = (): PolicyHarness => ({
   },
 });
 
+const EmptyNativeInputSchema = Type.Object({}, { additionalProperties: false });
+type EmptyNativeInput = Static<typeof EmptyNativeInputSchema>;
+
 const sessionHarness = (
   definitions: ToolDefinition[],
   runner: PolicyHarness = permissivePolicy(),
@@ -84,12 +83,93 @@ const sessionHarness = (
 };
 
 describe("PiToolBridge", () => {
+  test("uses Pi 1.0 nested-tool API when peer package cannot resolve", async () => {
+    const bridge = await PiToolBridge.create({ resolveModule: () => undefined });
+    const nativeInfo = {
+      name: "native",
+      description: "Native Pi tool",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      sourceInfo,
+      exposure: "direct" as const,
+    } satisfies ToolInfo & { exposure: "direct" };
+    const modelOnlyInfo = {
+      ...nativeInfo,
+      name: "model_only",
+      exposure: "model-only" as const,
+    };
+    bridge.capture({ getAllTools: () => [nativeInfo, modelOnlyInfo] });
+    expect(bridge.status()).toMatchObject({ available: true, host: "native", tools: 2 });
+
+    let invoked = false;
+    // SAFETY: bridge reads only tools and executeTool from this native context.
+    const ctx = Object.assign(Object.create(null), {
+      tools: [{ name: "native" }],
+      async executeTool(name: string, args: EmptyNativeInput) {
+        invoked = name === "native" && Object.keys(args).length === 0;
+        return {
+          result: { content: [{ type: "text" as const, text: "native result" }], details: {} },
+          isError: false,
+        };
+      },
+    }) as PiToolContext;
+    const result = await bridge.invoke("native", "nested", {}, undefined, () => {}, ctx);
+
+    expect(invoked).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: "native result" }]);
+    expect(bridge.tools(ctx).map((entry) => entry.name)).toEqual(["native"]);
+
+    let modelOnlyInvoked = false;
+    // SAFETY: bridge reads only tools and executeTool from this native context.
+    const filteredCtx = Object.assign(Object.create(null), {
+      tools: [{ name: "native" }],
+      async executeTool() {
+        modelOnlyInvoked = true;
+        return {
+          result: { content: [{ type: "text" as const, text: "unexpected" }], details: {} },
+          isError: false,
+        };
+      },
+    }) as PiToolContext;
+    await expect(
+      bridge.invoke("model_only", "not-callable", {}, undefined, () => {}, filteredCtx),
+    ).rejects.toThrow("Pi tool is not callable in this context: model_only");
+    expect(modelOnlyInvoked).toBe(false);
+
+    // SAFETY: the native path reads only tools and executeTool from this error context.
+    const errorCtx = Object.assign(Object.create(null), {
+      tools: [{ name: "native" }],
+      async executeTool() {
+        return {
+          result: { content: [{ type: "text" as const, text: "native failure" }], details: {} },
+          isError: true,
+        };
+      },
+    }) as PiToolContext;
+    await expect(
+      bridge.invoke("native", "nested-error", {}, undefined, () => {}, errorCtx),
+    ).rejects.toThrow("native failure");
+  });
+
   test("captures unbundled session and resolves late registrations lazily", async () => {
     const bridge = await PiToolBridge.create();
     const first = definition("first");
     const session = sessionHarness([first]);
 
-    bridge.capture({ getAllTools: () => session.getAllTools() });
+    bridge.capture({
+      getAllTools: () => {
+        const [info] = session.getAllTools();
+        if (info === undefined) return [];
+        // SAFETY: Pi 0.84.4 metadata lacks exposure; shared fields model legacy metadata.
+        return [
+          {
+            name: info.name,
+            description: info.description,
+            parameters: info.parameters,
+            sourceInfo: info.sourceInfo,
+          } as ToolInfo,
+        ];
+      },
+    });
     expect(bridge.status()).toMatchObject({ available: true, host: "unbundled", tools: 1 });
     expect(bridge.definition("first")).toBe(first);
 
@@ -119,8 +199,8 @@ describe("PiToolBridge", () => {
       tools: 0,
     });
     expect(bridge.definition("missing")).toBeUndefined();
-    // SAFETY: unavailable bridge rejects before it can read ExtensionContext.
-    const ctx = {} as ExtensionContext;
+    // SAFETY: unavailable bridge rejects before it can read the Pi tool context.
+    const ctx = {} as PiToolContext;
     await expect(
       bridge.invoke("missing", "unavailable", {}, undefined, () => {}, ctx),
     ).rejects.toThrow("Current Pi host does not expose an importable shared AgentSession");
@@ -152,8 +232,8 @@ describe("PiToolBridge", () => {
     blockedBridge.capture({
       getAllTools: () => sessionHarness([target], blocking).getAllTools(),
     });
-    // SAFETY: blocked policy returns before target can read ExtensionContext.
-    const ctx = {} as ExtensionContext;
+    // SAFETY: blocked policy returns before target can read the Pi tool context.
+    const ctx = {} as PiToolContext;
 
     await expect(
       blockedBridge.invoke("guarded", "blocked", { value: "raw" }, undefined, () => {}, ctx),

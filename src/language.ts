@@ -4,7 +4,7 @@ const REPLACEMENTS = {
   CS001: 'const result = await read({ path: "file.txt" }); return result;',
   CS002: 'const matches = await search({ pattern: "TODO", path: "src" }); return matches;',
   CS003:
-    'Inspect with tools({ query: "name" }), then call pi({ tool: "exact_name", args: { ... } }).',
+    'Inspect callable tools with tools({ query: "name" }), then invoke the exact listed name with pi({ tool: "exact_name", args: { ... } }).',
   CS004: 'const result = await read({ path: "file.txt", offset: 1, limit: 200 }); return result;',
   CS005:
     "Use either read({ path, tail }) or read({ path, offset, limit }), not both tail and offset.",
@@ -53,7 +53,7 @@ Supported forms: top-level const declarations; direct await; static Promise.all;
 At think, choose { decision: "continue" }, { decision: "continue", count: N }, { decision: "stop" }, or { decision: "replace", script, fromScratch? }. A pending checkpoint rejects a new initial script.
 Unsupported forms: tagged templates; wrapper callbacks; computed callback bodies; regex literals; per-call .catch.
 Detached calls return stable job IDs. Join a later run with await <job binding>. Mutating work is never retried unless repeat-safe.
-Pi tools: inspect with tools({ query? }); invoke with pi({ tool: "exact_name", args: { ... } }). callscript recursion is blocked. Pi calls serialize and are never repeat-safe.`;
+Pi tools: tools({ query? }) lists tools callable from this context; invoke those exact names with pi({ tool, args }). callscript recursion is blocked. Pi calls serialize and are never repeat-safe.`;
 
 export const languageCard = (engine: Pick<ScriptEngine<readonly never[]>, "describe">) =>
   `${engine.describe().trim()}\n\n${EXTRA_LANGUAGE.trim()}`;
