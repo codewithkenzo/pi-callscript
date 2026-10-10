@@ -3,6 +3,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
+import { canonicalTool } from "./aliases.js";
 import type { Activity, RunDetails } from "./types.js";
 import type { OperationPresentationDetails } from "./presentation.js";
 
@@ -180,13 +181,14 @@ const projectedOperations = (source: string): readonly ProjectedOperation[] => {
     index += 1;
     while (index < source.length && isIdentifierPart(source[index] ?? "")) index += 1;
     const identifier = source.slice(start, index);
-    if (!ACTION_LABELS.has(identifier)) continue;
+    const operation = canonicalTool(identifier);
+    if (!ACTION_LABELS.has(operation)) continue;
     let cursor = index;
     while (/\s/.test(source[cursor] ?? "")) cursor += 1;
     if (source[cursor] === "(")
       operations.push({
-        tool: identifier,
-        target: projectedTarget(source, cursor + 1, identifier),
+        tool: operation,
+        target: projectedTarget(source, cursor + 1, operation),
       });
   }
   return operations;

@@ -7,7 +7,7 @@ description: Use Pi CallScript to compose multiple coding-tool actions into deli
 
 Requires the `pi-callscript` Pi extension and its `callscript` tool.
 
-> CallScript is available beside other Pi tools. Use fixed capabilities directly. Discover Pi tools callable from the current context with `tools({ query })`, then invoke a listed tool by exact name with `pi({ tool, args })`.
+> CallScript is available beside other Pi tools. Use fixed capabilities directly. Discover Pi tools callable from the current context with `tools({ query })`, then call a listed tool by exact name (`byName: true`) or through `pi({ tool, args })`.
 
 `on` adds one `callscript` entry to current active tools. `off` removes only `callscript`. Both transitions preserve current state owned by other extensions.
 
@@ -53,6 +53,7 @@ Pi-native operations:
 - `find({ pattern, path?, limit? })`
 - `list({ path? })`
 - `run({ command, timeout? })`
+- Aliases: `bash` = `run`, `grep` = `search`, `ls` = `list`.
 
 CallScript additions:
 
@@ -62,7 +63,8 @@ CallScript additions:
 - `snapshot({ paths })` captures exact file contents and remembers missing files. It returns a receipt object: `{ id, files, bytes }`.
 - `undo({ snapshot: point.id })` restores a session-local snapshot by ID. Pass the receipt’s `id` string, never the full receipt object.
 - `tools({ query? })` inspects fixed capabilities and Pi tools callable from the current context, with exact schemas.
-- `pi({ tool, args })` invokes a listed callable Pi tool except recursive `callscript`. Registered but non-callable tools are unavailable to nested calls.
+- Every other registered Pi tool with a valid identifier name is also callable directly by its exact name, e.g. `hypa_shell({ command })`. `tools({ query })` marks these with `byName: true`.
+- `pi({ tool, args })` invokes any listed callable Pi tool except recursive `callscript`, including names that are not valid identifiers and tools registered after the last reload. Registered but non-callable tools are unavailable to nested calls.
 
 `tools({ query })` substring-matches names and descriptions; inspect returned names and schemas instead of assuming first match is target.
 

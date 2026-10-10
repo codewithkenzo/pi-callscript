@@ -81,7 +81,8 @@ describe("stable CallScript language card", () => {
     expect(first).toContain("try/catch recovery");
     expect(first).toContain("tagged templates");
     expect(first).toContain("per-call .catch");
-    expect(first).toContain("invoke those exact names with pi({ tool, args })");
+    expect(first).toContain("Aliases: bash = run, grep = search, ls = list.");
+    expect(first).toContain("callable by its exact name");
     expect(first).not.toContain(firstCwd);
     expect(first).not.toContain(secondCwd);
     expect(CALLSCRIPT_MODE_PROMPT).not.toMatch(/timestamp|counter|progress/i);

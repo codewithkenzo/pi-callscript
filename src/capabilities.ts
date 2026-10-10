@@ -9,6 +9,7 @@ import {
   type AgentToolResult,
   type EditToolDetails,
   type ToolDefinition,
+  type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import {
   earlyReturn,
@@ -25,6 +26,7 @@ import { Chunk, Effect, Ref } from "effect";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 
+import { canonicalTool, TOOL_ALIASES } from "./aliases.js";
 import { StreamUpdateFailure, ToolInvocationFailure } from "./errors.js";
 import type { PiToolProvider } from "./pi-tool-bridge.js";
 import type { ActivityPresentation } from "./presentation.js";
@@ -41,6 +43,11 @@ interface ActivityMeta {
   detail?: string;
   timeoutMs?: number;
   expectedMs?: number;
+}
+
+export interface Capabilities {
+  readonly fixed: readonly AnyScriptTool[];
+  readonly extra: readonly AnyScriptTool[];
 }
 
 interface OperationResult<T> {
@@ -195,7 +202,7 @@ const milliseconds = (value: string | number | undefined) =>
 const plannedMeta = (step: CallStep, config: ExtensionConfig): ActivityMeta => {
   const args = plannedArgs(step.args);
   const path = args?.path;
-  switch (step.call) {
+  switch (canonicalTool(step.call)) {
     case "read":
     case "write":
     case "edit":
@@ -256,7 +263,7 @@ export const queuePlan = (
       .filter((step) => runnable.has(step.id))
       .map((step): ActivityEvent => ({
         step: step.id,
-        tool: step.call,
+        tool: canonicalTool(step.call),
         ...plannedMeta(step, config),
         phase: "queued",
         selection: "selected",
@@ -266,7 +273,7 @@ export const queuePlan = (
       .filter((step) => !runnable.has(step.id))
       .map((step): ActivityEvent => ({
         step: step.id,
-        tool: step.call,
+        tool: canonicalTool(step.call),
         ...plannedMeta(step, config),
         phase: "skipped",
         selection: "skipped",
@@ -364,7 +371,7 @@ const withActivity = <T, E>(
     const startedAt = performance.now();
     const base: ActivityBase = {
       step: call.stepId,
-      tool: call.toolName,
+      tool: canonicalTool(call.toolName),
       ...meta,
     };
     if (call.itemIndex !== undefined) base.item = call.itemIndex;
@@ -551,13 +558,73 @@ const ToolsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const PiArgsSchema = Type.Record(Type.String(), Type.Unknown());
+
 const PiSchema = Type.Object(
   {
     tool: Type.String({ minLength: 1, maxLength: 200 }),
-    args: Type.Record(Type.String(), Type.Unknown()),
+    args: PiArgsSchema,
   },
   { additionalProperties: false },
 );
+
+const SCRIPT_IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+
+const RESERVED_SCRIPT_NAMES: ReadonlySet<string> = new Set([
+  "input",
+  "callscript",
+  "Math",
+  "JSON",
+  "Date",
+  "Object",
+  "Array",
+  "Number",
+  "String",
+  "Boolean",
+  "Base64",
+  "Promise",
+  "undefined",
+  "NaN",
+  "Infinity",
+  "null",
+  "true",
+  "false",
+  "await",
+  "async",
+  "const",
+  "let",
+  "var",
+  "return",
+  "if",
+  "else",
+  "try",
+  "catch",
+  "finally",
+  "throw",
+  "new",
+  "delete",
+  "typeof",
+  "void",
+  "in",
+  "of",
+  "for",
+  "while",
+  "do",
+  "switch",
+  "case",
+  "default",
+  "break",
+  "continue",
+  "function",
+  "class",
+  "this",
+  "import",
+  "export",
+  "yield",
+]);
+
+const firstStringArgument = (args: Static<typeof PiArgsSchema>) =>
+  Object.values(args).find((value): value is string => Value.Check(Type.String(), value));
 
 const FIXED_CAPABILITY_NAMES = [
   "read",
@@ -707,7 +774,7 @@ export const createCapabilities = (
   source: InvocationSource,
   snapshots: SnapshotStore,
   piTools?: PiToolProvider,
-): readonly AnyScriptTool[] => {
+): Capabilities => {
   const run =
     process.platform === "win32"
       ? createPowerShellToolDefinition(cwd)
@@ -721,7 +788,68 @@ export const createCapabilities = (
     );
     return result;
   };
-  return [
+  const invokePi = (
+    name: string,
+    args: Static<typeof PiArgsSchema>,
+    call: ToolCallContext,
+    target: string,
+  ) =>
+    withActivity(source, call, { target }, (active) =>
+      Effect.tryPromise({
+        try: () =>
+          serialBridge(async () => {
+            if (active.signal?.aborted === true) throw new Error("Operation aborted");
+            if (name === "callscript")
+              throw new Error("Recursive callscript invocation is not allowed");
+            if (piTools === undefined) throw new Error("Pi tool bridge is not configured");
+            return piTools.invoke(
+              name,
+              `${active.id}:${call.stepId}:${name}`,
+              args,
+              active.signal,
+              (result) => forwardBridgedUpdate(active, result),
+              active.ctx,
+            );
+          }),
+        catch: (cause) => ToolInvocationFailure.from(name, cause),
+      }).pipe(
+        Effect.map((result) => ({
+          value: bridgedResult(result),
+          summary: bridgedSummary(result),
+        })),
+      ),
+    );
+  const bridgedTool = (entry: ToolInfo) =>
+    tool({
+      name: entry.name,
+      description: entry.description,
+      inputSchema: jsonSchema(entry.parameters),
+      execute(raw: Static<typeof PiArgsSchema>, call) {
+        const program = Effect.try({
+          try: () => Value.Parse(PiArgsSchema, raw),
+          catch: (cause) => ToolInvocationFailure.from(entry.name, cause),
+        }).pipe(
+          Effect.flatMap((args) =>
+            invokePi(entry.name, args, call, firstStringArgument(args) ?? entry.name),
+          ),
+        );
+        return Effect.runPromise(program);
+      },
+    });
+  const callableNames = [...FIXED_CAPABILITY_NAMES, ...TOOL_ALIASES.keys()];
+  const taken = new Set<string>(callableNames);
+  const bridged = (piTools?.tools() ?? []).flatMap((entry) => {
+    if (
+      taken.has(entry.name) ||
+      !SCRIPT_IDENTIFIER.test(entry.name) ||
+      RESERVED_SCRIPT_NAMES.has(entry.name)
+    )
+      return [];
+    taken.add(entry.name);
+    return [bridgedTool(entry)];
+  });
+  const bridgedNames = new Set(bridged.map((entry) => entry.name));
+  const fixed = [
     adapt(
       "read",
       createInvocationReadDefinition(cwd),
@@ -859,35 +987,7 @@ export const createCapabilities = (
         const program = Effect.try({
           try: () => Value.Parse(PiSchema, raw),
           catch: (cause) => ToolInvocationFailure.from("pi", cause),
-        }).pipe(
-          Effect.flatMap((args) =>
-            withActivity(source, call, { target: args.tool }, (active) =>
-              Effect.tryPromise({
-                try: () =>
-                  serialBridge(async () => {
-                    if (active.signal?.aborted === true) throw new Error("Operation aborted");
-                    if (args.tool === "callscript")
-                      throw new Error("Recursive callscript invocation is not allowed");
-                    if (piTools === undefined) throw new Error("Pi tool bridge is not configured");
-                    return piTools.invoke(
-                      args.tool,
-                      `${active.id}:${call.stepId}:${args.tool}`,
-                      args.args,
-                      active.signal,
-                      (result) => forwardBridgedUpdate(active, result),
-                      active.ctx,
-                    );
-                  }),
-                catch: (cause) => ToolInvocationFailure.from(args.tool, cause),
-              }).pipe(
-                Effect.map((result) => ({
-                  value: bridgedResult(result),
-                  summary: bridgedSummary(result),
-                })),
-              ),
-            ),
-          ),
-        );
+        }).pipe(Effect.flatMap((args) => invokePi(args.tool, args.args, call, args.tool)));
         return Effect.runPromise(program);
       },
     }),
@@ -910,8 +1010,8 @@ export const createCapabilities = (
                 const query = args.query?.toLowerCase();
                 const names =
                   query === undefined
-                    ? [...FIXED_CAPABILITY_NAMES]
-                    : FIXED_CAPABILITY_NAMES.filter((name) => name.includes(query));
+                    ? [...callableNames]
+                    : callableNames.filter((name) => name.includes(query));
                 const callable = (piTools?.tools(active.ctx) ?? []).flatMap((entry) => {
                   if (entry.name === "callscript") return [];
                   if (
@@ -923,6 +1023,7 @@ export const createCapabilities = (
                   return [
                     {
                       name: entry.name,
+                      byName: bridgedNames.has(entry.name),
                       description: entry.description,
                       parameters: entry.parameters,
                       source: entry.sourceInfo,
@@ -1062,4 +1163,9 @@ export const createCapabilities = (
       },
     }),
   ];
+  const aliases = [...TOOL_ALIASES].flatMap(([alias, target]) => {
+    const original = fixed.find((entry) => entry.name === target);
+    return original === undefined ? [] : [{ ...original, name: alias }];
+  });
+  return { fixed, extra: [...aliases, ...bridged] };
 };

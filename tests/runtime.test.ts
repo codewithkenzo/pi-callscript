@@ -932,6 +932,55 @@ return ready;
     expect(join.text).toContain("CS007");
   });
 
+  test("accepts Pi's native bash, grep, and ls names with the boundaries of run, search, and list", async () => {
+    const cwd = await workspace();
+    await writeFile(join(cwd, "note.txt"), "alias target");
+    const runtime = new CallScriptRuntime(cwd, config);
+    const input = invocation(cwd);
+    const withSession: InvocationInput = {
+      ...input,
+      ctx: {
+        ...input.ctx,
+        sessionManager: Object.assign(Object.create(null), {
+          getSessionId: () => "alias-test",
+          getSessionFile: () => undefined,
+        }),
+      },
+    };
+
+    const ok = await Effect.runPromise(
+      runtime.execute(
+        [
+          'const shell = await bash({ command: "echo shell-ok", timeout: 5 });',
+          'const matches = await grep({ pattern: "alias", path: "." });',
+          'const entries = await ls({ path: "." });',
+          "return { shell, matches, entries };",
+        ].join("\n"),
+        withSession,
+      ),
+    );
+    const timeout = await Effect.runPromise(
+      runtime.execute('return await bash({ command: "true", timeout: 601 });', invocation(cwd)),
+    );
+    const emptyPath = await Effect.runPromise(
+      runtime.execute('return await ls({ path: "" });', invocation(cwd)),
+    );
+
+    expect(ok.isError, ok.text).toBe(false);
+    expect(JSON.parse(ok.text)).toMatchObject({
+      shell: expect.stringContaining("shell-ok"),
+      matches: expect.stringContaining("alias target"),
+      entries: expect.stringContaining("note.txt"),
+    });
+    expect(new Set(ok.details.activity.map((entry) => entry.tool))).toEqual(
+      new Set(["run", "search", "list"]),
+    );
+    expect(timeout.isError).toBe(true);
+    expect(timeout.text).toContain("timeout uses seconds");
+    expect(emptyPath.isError).toBe(true);
+    expect(emptyPath.text).toContain("path must not be empty");
+  });
+
   test("rejects invalid scripts before dispatch", async () => {
     const cwd = await workspace();
     const runtime = new CallScriptRuntime(cwd, config);
@@ -1210,5 +1259,102 @@ return { fixed, bridged };
       fixed: expect.stringContaining("fixed read"),
       bridged: "bridged read",
     });
+  });
+
+  test("calls registered Pi tools by bare name and leaves unusable names to pi", async () => {
+    const cwd = await workspace();
+    const EchoSchema = Type.Object({ value: Type.String() }, { additionalProperties: false });
+    const echoDefinition = (name: string): ToolDefinition<typeof EchoSchema> => ({
+      name,
+      label: name,
+      description: "Echo through " + name,
+      parameters: EchoSchema,
+      async execute(_id, args) {
+        return { content: [{ type: "text", text: name + ":" + args.value }], details: {} };
+      },
+    });
+    const definitions = [
+      echoDefinition("hypa_shell"),
+      echoDefinition("web-search"),
+      echoDefinition("Math"),
+      echoDefinition("callscript"),
+    ];
+    const base = providerFor(definitions);
+    const invoked: string[] = [];
+    const provider: PiToolProvider = {
+      ...base,
+      async invoke(name, id, raw, signal, onUpdate, ctx) {
+        invoked.push(name);
+        return base.invoke(name, id, raw, signal, onUpdate, ctx);
+      },
+    };
+    const runtime = new CallScriptRuntime(cwd, config, () => undefined, provider);
+
+    const result = await Effect.runPromise(
+      runtime.execute(
+        [
+          'const direct = await hypa_shell({ value: "a" });',
+          'const viaPi = await pi({ tool: "web-search", args: { value: "b" } });',
+          'const listed = await tools({ query: "echo" });',
+          "return { direct, viaPi, listed };",
+        ].join("\n"),
+        invocation(cwd),
+      ),
+    );
+    const recursion = await Effect.runPromise(
+      runtime.execute('return await callscript({ value: "c" });', invocation(cwd)),
+    );
+
+    expect(result.isError, result.text).toBe(false);
+    const value = JSON.parse(result.text);
+    expect(value.direct).toBe("hypa_shell:a");
+    expect(value.viaPi).toBe("web-search:b");
+    expect(
+      Object.fromEntries(
+        value.listed.pi.map((entry: { name: string; byName: boolean }) => [
+          entry.name,
+          entry.byName,
+        ]),
+      ),
+    ).toEqual({
+      hypa_shell: true,
+      "web-search": false,
+      Math: false,
+    });
+    expect(invoked).toEqual(["hypa_shell", "web-search"]);
+    expect(
+      result.details.activity.find(
+        (entry) => entry.tool === "hypa_shell" && entry.phase === "done",
+      ),
+    ).toMatchObject({
+      target: "a",
+      phase: "done",
+    });
+    expect(recursion.isError).toBe(true);
+    expect(recursion.text).toContain("callscript");
+  });
+
+  test("keeps the language card identical however many Pi tools are registered", async () => {
+    const cwd = await workspace();
+    const many = Array.from({ length: 200 }, (_, index): ToolDefinition => ({
+      name: "fake_tool_" + index,
+      label: "Fake " + index,
+      description: "Fake tool " + index,
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        return { content: [{ type: "text", text: "fake" }], details: {} };
+      },
+    }));
+
+    const bare = new CallScriptRuntime(cwd, config).languageCard();
+    const crowded = new CallScriptRuntime(
+      cwd,
+      config,
+      () => undefined,
+      providerFor(many),
+    ).languageCard();
+
+    expect(Buffer.from(crowded)).toEqual(Buffer.from(bare));
+    expect(crowded).not.toContain("fake_tool_0");
   });
 });

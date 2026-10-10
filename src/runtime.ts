@@ -16,6 +16,7 @@ import {
 } from "callscript";
 import { Chunk, Effect, Fiber, Ref, Schema } from "effect";
 
+import { canonicalTool } from "./aliases.js";
 import { closeQueued, createCapabilities, pulse, queuePlan } from "./capabilities.js";
 import { validateCapabilityBoundaries } from "./boundaries.js";
 import { OutputBoundsFailure, RuntimeDefect, SourceValidationFailure } from "./errors.js";
@@ -355,9 +356,16 @@ export class CallScriptRuntime {
     this.#config = config;
     this.#onJobSettled = onJobSettled;
     this.#snapshots = new SnapshotStore(cwd);
-    this.tools = createCapabilities(cwd, config, () => this.invocation(), this.#snapshots, piTools);
+    const capabilities = createCapabilities(
+      cwd,
+      config,
+      () => this.invocation(),
+      this.#snapshots,
+      piTools,
+    );
+    this.tools = capabilities.fixed;
     this.engine = callscript({
-      tools: this.tools,
+      tools: [...capabilities.fixed, ...capabilities.extra],
       format: "js",
       limits: config.limits,
     });
@@ -421,7 +429,7 @@ export class CallScriptRuntime {
         id: step.id,
         label: target === undefined ? `${step.call} · ${step.id}` : `${step.call} · ${target}`,
         status: "running",
-        repeatSafe: REPEAT_SAFE_TOOLS.has(step.call),
+        repeatSafe: REPEAT_SAFE_TOOLS.has(canonicalTool(step.call)),
       });
     }
   }
@@ -489,7 +497,7 @@ export class CallScriptRuntime {
   }
 
   languageCard() {
-    return languageCard(this.engine);
+    return languageCard(this.tools, this.#config.limits);
   }
 
   reset() {

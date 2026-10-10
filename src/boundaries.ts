@@ -2,6 +2,8 @@ import { isCallStep, type JsonValue, type Script } from "callscript";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
+import { canonicalTool } from "./aliases.js";
+
 const ObjectSchema = Type.Record(Type.String(), Type.Unknown);
 const StringSchema = Type.String();
 const NumberSchema = Type.Number();
@@ -54,11 +56,12 @@ export const validateCapabilityBoundaries = (script: Script) => {
   for (const step of script.steps) {
     if (!isCallStep(step) || step.args === undefined || !isObject(step.args)) continue;
     const args = step.args;
-    if (["read", "write", "edit", "search", "find", "list"].includes(step.call)) {
+    const call = canonicalTool(step.call);
+    if (["read", "write", "edit", "search", "find", "list"].includes(call)) {
       const issue = pathIssue(step.id, args.path);
       if (issue !== undefined) issues.push(issue);
     }
-    if (step.call === "read") {
+    if (call === "read") {
       if (args.tail !== undefined && args.offset !== undefined)
         issues.push(`${step.id}: tail and offset are mutually exclusive`);
       for (const key of ["tail", "offset", "limit"] as const) {
@@ -70,13 +73,13 @@ export const validateCapabilityBoundaries = (script: Script) => {
           );
       }
     }
-    if (step.call === "http") validateHttp(step.id, args, issues);
-    if (step.call === "wait") {
+    if (call === "http") validateHttp(step.id, args, issues);
+    if (call === "wait") {
       const value = literalNumber(args.milliseconds);
       if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 600_000))
         issues.push(`${step.id}: milliseconds must be an integer from 0 through 600000`);
     }
-    if (step.call === "run") {
+    if (call === "run") {
       const timeout = literalNumber(args.timeout);
       if (timeout !== undefined && (!Number.isInteger(timeout) || timeout < 1 || timeout > 600))
         issues.push(`${step.id}: timeout uses seconds and must be an integer from 1 through 600`);

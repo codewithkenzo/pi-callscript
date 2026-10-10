@@ -1,10 +1,16 @@
-import { ScriptValidationError, type ScriptEngine } from "callscript";
+import {
+  jsLanguageCard,
+  ScriptValidationError,
+  toolCards,
+  type AnyScriptTool,
+  type ScriptLimits,
+} from "callscript";
 
 const REPLACEMENTS = {
   CS001: 'const result = await read({ path: "file.txt" }); return result;',
   CS002: 'const matches = await search({ pattern: "TODO", path: "src" }); return matches;',
   CS003:
-    'Inspect callable tools with tools({ query: "name" }), then invoke the exact listed name with pi({ tool: "exact_name", args: { ... } }).',
+    'Inspect callable tools with tools({ query: "name" }). Call fixed tools, bash/grep/ls, or an exact Pi tool name directly; otherwise use pi({ tool: "exact_name", args: { ... } }).',
   CS004: 'const result = await read({ path: "file.txt", offset: 1, limit: 200 }); return result;',
   CS005:
     "Use either read({ path, tail }) or read({ path, offset, limit }), not both tail and offset.",
@@ -53,9 +59,10 @@ Supported forms: top-level const declarations; direct await; static Promise.all;
 At think, choose { decision: "continue" }, { decision: "continue", count: N }, { decision: "stop" }, or { decision: "replace", script, fromScratch? }. A pending checkpoint rejects a new initial script.
 Unsupported forms: tagged templates; wrapper callbacks; computed callback bodies; regex literals; per-call .catch.
 Detached calls return stable job IDs. Join a later run with await <job binding>. Mutating work is never retried unless repeat-safe.
-Pi tools: tools({ query? }) lists tools callable from this context; invoke those exact names with pi({ tool, args }). callscript recursion is blocked. Pi calls serialize and are never repeat-safe.`;
+Aliases: bash = run, grep = search, ls = list.
+Pi tools: every other registered Pi tool is also callable by its exact name when the name is a valid identifier; list names and schemas with tools({ query? }). Other names, and tools registered after the last reload, go through pi({ tool, args }). callscript recursion is blocked. Pi calls serialize and are never repeat-safe.`;
 
-export const languageCard = (engine: Pick<ScriptEngine<readonly never[]>, "describe">) =>
-  `${engine.describe().trim()}\n\n${EXTRA_LANGUAGE.trim()}`;
+export const languageCard = (tools: readonly AnyScriptTool[], limits: Partial<ScriptLimits>) =>
+  [jsLanguageCard({ limits }), `## tools\n${toolCards(tools)}`, EXTRA_LANGUAGE.trim()].join("\n\n");
 
 export const validationReplacement = (code: ValidationCode) => REPLACEMENTS[code];
