@@ -623,11 +623,11 @@ export const renderScriptResult = (
       location === null
         ? ""
         : ` line ${location[1]}${location[2] === undefined ? "" : `, column ${location[2]}`}`;
-    const correction = compact.match(/(?:Use|Try):\s*(.*)$/i)?.[1];
+    const correction = compact.match(/(?:Use|Try|Replacement):\s*(.*)$/i)?.[1];
     const reason =
       compact
-        .replace(/\s*(?:Use|Try):\s*.*$/i, "")
-        .replace(/\s*\bline\s+\d+(?:[, ]+column\s+\d+)?/i, "")
+        .replace(/\s*(?:Use|Try|Replacement):\s*.*$/i, "")
+        .replace(/\s*\bline\s+\d+(?:[, ]+column\s+\d+)?:?/i, "")
         .trim() || "source is not valid";
     const lines = [theme.fg("error", "× Invalid source"), `  ${reason}${where}`];
     lines.push(`  ${theme.fg("dim", "Use:")} ${correction ?? 'await read({ path: "file" })'}`);

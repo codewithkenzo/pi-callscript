@@ -54,7 +54,10 @@ const context = (cwd: string): InvocationInput["ctx"] => {
     mode: "json" as const,
     hasUI: false,
     cwd,
-    sessionManager: empty,
+    sessionManager: Object.assign(Object.create(null), {
+      getSessionId: () => "runtime-test",
+      getSessionFile: () => undefined,
+    }),
     modelRegistry: empty,
     model: undefined,
     scopedModels: [],
@@ -936,17 +939,6 @@ return ready;
     const cwd = await workspace();
     await writeFile(join(cwd, "note.txt"), "alias target");
     const runtime = new CallScriptRuntime(cwd, config);
-    const input = invocation(cwd);
-    const withSession: InvocationInput = {
-      ...input,
-      ctx: {
-        ...input.ctx,
-        sessionManager: Object.assign(Object.create(null), {
-          getSessionId: () => "alias-test",
-          getSessionFile: () => undefined,
-        }),
-      },
-    };
 
     const ok = await Effect.runPromise(
       runtime.execute(
@@ -956,7 +948,7 @@ return ready;
           'const entries = await ls({ path: "." });',
           "return { shell, matches, entries };",
         ].join("\n"),
-        withSession,
+        invocation(cwd),
       ),
     );
     const timeout = await Effect.runPromise(
@@ -979,6 +971,70 @@ return ready;
     expect(timeout.text).toContain("timeout uses seconds");
     expect(emptyPath.isError).toBe(true);
     expect(emptyPath.text).toContain("path must not be empty");
+  });
+
+  test("names local helper functions instead of blaming call options", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const result = await Effect.runPromise(
+      runtime.execute(
+        [
+          'const q = (i, n) => pi({ tool: "x", args: { i, n } });',
+          "const r = await Promise.all([1, 2].map((i, n) => q(i, n)));",
+          "return r;",
+        ].join("\n"),
+        invocation(cwd),
+      ),
+    );
+
+    expect(result.details.status).toBe("invalid");
+    expect(result.text).toContain('CS008: "q" is a local function');
+    expect(result.text).not.toContain("CS004");
+  });
+
+  test("locates string escape errors and explains the fix", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const result = await Effect.runPromise(
+      runtime.execute(
+        'const a = await read({ path: "C:\\users\\x.txt" }); return a;',
+        invocation(cwd),
+      ),
+    );
+
+    expect(result.details.status).toBe("invalid");
+    expect(result.text).toContain("CS001");
+    expect(result.text).toContain("Near: ");
+    expect(result.text).toContain("<here>");
+    expect(result.text).toContain("forward slashes");
+  });
+
+  test("continues past a failed call with onError skip", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const result = await Effect.runPromise(
+      runtime.execute(
+        'const missing = await read({ path: "missing.txt" }, { onError: "skip" }); return { missing, after: 1 };',
+        invocation(cwd),
+      ),
+    );
+
+    expect(result.isError, result.text).toBe(false);
+    expect(JSON.parse(result.text)).toEqual({ after: 1 });
+  });
+
+  test("keeps a truncated shell result a string so scripts can keep processing it", async () => {
+    const cwd = await workspace();
+    const runtime = new CallScriptRuntime(cwd, config);
+    const result = await Effect.runPromise(
+      runtime.execute(
+        'const out = await bash({ command: "seq 1 3000", timeout: 10 }); return { lines: out.split("\\n").length };',
+        invocation(cwd),
+      ),
+    );
+
+    expect(result.isError, result.text).toBe(false);
+    expect(JSON.parse(result.text).lines).toBeGreaterThan(1_000);
   });
 
   test("rejects invalid scripts before dispatch", async () => {

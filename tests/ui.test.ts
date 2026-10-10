@@ -425,6 +425,26 @@ describe("CallScript UI", () => {
     expect(output).not.toContain("└─");
   });
 
+  test("renders validation codes, locations, and replacements without stray punctuation", () => {
+    const details = runDetails([]);
+    const invalid: RunDetails = { ...details, status: "invalid" };
+    const output = render(
+      renderScriptResult(
+        "CS001: line 1: Not parseable as JavaScript: Bad escape (1:34)\nNear: a<here>b\nReplacement: use forward slashes",
+        invalid,
+        false,
+        false,
+        true,
+        theme,
+      ),
+    );
+
+    expect(output).toContain("CS001: Not parseable as JavaScript");
+    expect(output).not.toContain("CS001:: ");
+    expect(output).toContain("line 1");
+    expect(output).toContain("Use: use forward slashes");
+  });
+
   test("shows cancellation as distinct state with explicit plural labels", () => {
     const activity: Activity[] = [
       { sequence: 1, atMs: 0, step: "wait", tool: "wait", phase: "start", target: "1000 ms" },

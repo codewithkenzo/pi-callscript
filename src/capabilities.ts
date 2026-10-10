@@ -404,7 +404,7 @@ const nativeResult = <T>(result: AgentToolResult<T>) => {
     result.content.length === 1 && result.content[0]?.type === "text"
       ? result.content[0].text
       : undefined;
-  if (result.details === undefined && text !== undefined) return text;
+  if (text !== undefined) return text;
   if (result.details === undefined) return { content: result.content };
   return { content: result.content, details: result.details };
 };

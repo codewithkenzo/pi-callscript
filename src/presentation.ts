@@ -72,7 +72,7 @@ const compact = (text: string, maximum = 120) => {
 
 const serialized = <T>(value: T) => {
   try {
-    return stableStringify(value);
+    return stableStringify(value) ?? String(value);
   } catch {
     return String(value);
   }

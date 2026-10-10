@@ -715,7 +715,7 @@ export class CallScriptRuntime {
                   }),
                 ),
               ),
-            catch: SourceValidationFailure.from,
+            catch: (cause) => SourceValidationFailure.from(cause, script),
           })
         : Effect.succeed(script);
       const runPlan = (plan: Script): Effect.Effect<RunOutcome, RuntimeDefect> => {

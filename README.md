@@ -100,6 +100,8 @@ File and shell calls use the current Pi working directory. `run` uses PowerShell
 
 Pi's native names work too: `bash` is `run`, `grep` is `search`, `ls` is `list`. Every other registered Pi tool with a valid identifier name is callable directly, for example `hypa_shell({ command })`. Names and schemas come from `tools({ query })`. Other names, and tools registered after the last reload, go through `pi({ tool, args })`. The prompt lists no per-tool schemas, so it stays the same however many tools are installed.
 
+A failing call, including a timeout, fails the run. Wrap it in `try/catch`, or pass `{ onError: "skip" }` as the call's second argument to continue with `undefined`. Returned values are capped at about 10 KiB (`maxOutputBytes`, up to 20 KiB); full values stay usable inside the script, so page by returning slices. Scripts cannot define local helper functions that call tools; write the call inline.
+
 ## Compatibility
 
 Supports Pi 0.84.4 and Pi 1.x starting at 1.0.2. Pi 1.0 uses native nested-tool execution; Pi 0.84.4 uses the optional legacy bridge. Compatibility CI checks locked, legacy, and latest Pi packages. The latest-Pi matrix runs weekly and on manual dispatch; core checks run on Linux, macOS, and Windows.

@@ -8,8 +8,8 @@ export class SourceValidationFailure extends Data.TaggedError("SourceValidationF
   readonly message: string;
   readonly cause: unknown;
 }> {
-  static from(cause: unknown) {
-    return new SourceValidationFailure({ message: validationMessage(cause), cause });
+  static from(cause: unknown, source: string | undefined = undefined) {
+    return new SourceValidationFailure({ message: validationMessage(cause, source), cause });
   }
 }
 
