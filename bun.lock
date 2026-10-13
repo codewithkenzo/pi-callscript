@@ -5,7 +5,7 @@
     "": {
       "name": "pi-callscript",
       "dependencies": {
-        "callscript": "0.1.7",
+        "callscript": "0.1.8",
         "effect": "4.0.1",
       },
       "devDependencies": {
@@ -422,7 +422,7 @@
 
     "cac": ["cac@7.0.0", "", {}, "sha512-tixWYgm5ZoOD+3g6UTea91eow5z6AAHaho3g0V9CNSNb45gM8SmflpAc+GRd1InC4AqN/07Unrgp56Y94N9hJQ=="],
 
-    "callscript": ["callscript@0.1.7", "", { "dependencies": { "acorn": "^8.15.0", "zod": "^4.4.3" }, "peerDependencies": { "ai": ">=5" }, "optionalPeers": ["ai"] }, "sha512-1PUoGqcHnL0Hfx011fvrRDdKggfS6OmMcFtjr6VGajWe15ddH/gDgLkw/fCLajEhHU+ein02/kPFs4Apm3OFTQ=="],
+    "callscript": ["callscript@0.1.8", "", { "dependencies": { "acorn": "^8.15.0", "zod": "^4.4.3" }, "peerDependencies": { "ai": ">=5" }, "optionalPeers": ["ai"] }, "sha512-SrNd5QqUgN5076fEUl3roXqj6mPWZBdv0j/AY0fQhAkN25ofjiXT1twWsaL63ZaHXzHoRNJkY3DOA4TNo3ShbA=="],
 
     "chai": ["chai@6.3.0", "", {}, "sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg=="],
 

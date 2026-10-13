@@ -62,7 +62,7 @@
     "prepack": "bun run build"
   },
   "dependencies": {
-    "callscript": "0.1.7",
+    "callscript": "0.1.8",
     "effect": "4.0.1"
   },
   "devDependencies": {
