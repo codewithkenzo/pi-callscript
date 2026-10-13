@@ -69,7 +69,7 @@
     "@earendil-works/pi-coding-agent": "1.0.4",
     "@earendil-works/pi-tui": "1.0.4",
     "@oxlint/plugins": "1.87.0",
-    "@types/node": "26.6.4",
+    "@types/node": "26.6.5",
     "lefthook": "2.1.17",
     "oxfmt": "0.72.0",
     "oxlint": "1.87.0",
