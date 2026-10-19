@@ -68,7 +68,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.0.4",
     "@earendil-works/pi-tui": "1.0.4",
-    "@oxlint/plugins": "1.87.0",
+    "@oxlint/plugins": "1.88.0",
     "@types/node": "26.6.4",
     "lefthook": "2.1.17",
     "oxfmt": "0.72.0",
