@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "callscript": "0.1.7",
-    "effect": "4.0.1"
+    "effect": "4.0.5"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.0.4",
